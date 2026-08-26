@@ -9,8 +9,8 @@ e alterado sem abrir o sistema inteiro. É a área da chefe.
 ## O que tem aqui
 
 ```
-lib/        37 arquivos · o que a IA fala, quando fala e o que ela faz
-testes/     37 arquivos · as regras travadas em teste, com o caso real que as criou
+lib/        38 arquivos · o que a IA fala, quando fala e o que ela faz
+testes/     38 arquivos · as regras travadas em teste, com o caso real que as criou
 docs/       como tudo funciona, em português
 CLAUDE.md   as instruções do agente — leia se for usar Claude aqui
 scripts/    sincronização com o sistema
@@ -30,6 +30,7 @@ scripts/    sincronização com o sistema
 | `lib/seguro-fianca.ts` · `lib/prompt-seguro-fianca.ts` | a peneira do seguro na locação |
 | `lib/mensagem-segura.ts` | a última barreira antes de qualquer texto sair |
 | `lib/fala-de-sistema.ts` | a régua das frases que denunciam que do outro lado tem um programa |
+| `lib/pacote-locacao.ts` | o que a pessoa paga por mês de verdade: aluguel + condomínio + IPTU, e a margem acima do teto |
 | `lib/tom-da-imobiliaria.ts` | o tom da atendente, por imobiliária: mais solto, natural, profissional ou alto padrão |
 | `lib/prompt-audio.ts` | como ela escreve quando a resposta vira nota de voz |
 | `lib/ia-config.ts` | o nome da atendente, configurável por imobiliária |

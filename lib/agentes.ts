@@ -19,6 +19,7 @@ import type { AgenteIA, Conversa, Lead } from "@prisma/client";
 import { corretorPorTelefone, telefonesDosCorretores } from "@/lib/corretores";
 import { leadPorTelefone } from "@/lib/lead-telefone";
 import { brincoDaConversa } from "@/lib/brinco";
+import { descreverPacote, encaixe, MARGEM_ACIMA, pacoteMensal, tetoComMargem } from "@/lib/pacote-locacao";
 import { prisma } from "@/lib/db";
 import { agentesAtivos } from "@/lib/planos";
 import type { Agente } from "@/lib/cmv";
@@ -683,7 +684,22 @@ function fichaDoImovel(i: {
         status: "DISPONIVEL" as const,
         finalidade: { in: ["LOCACAO", "AMBOS"] },
         ...(input.tipo ? { tipo: { contains: input.tipo, mode: "insensitive" as const } } : {}),
-        ...(input.valorMaximo ? { valorSugerido: { lte: input.valorMaximo } } : {}),
+        // ── O TETO É DO PACOTE, E O BANCO SÓ SABE PENEIRAR O ALUGUEL ─────
+        //
+        // "Procuro até 1.700" na locação é o que sai da conta da pessoa todo
+        // mês: aluguel mais condomínio mais IPTU. Este filtro comparava o teto
+        // com `valorSugerido`, que é só o aluguel, e devolvia um apartamento de
+        // 1.500 com 400 de condomínio e 100 de IPTU como se coubesse.
+        //
+        // Somar três colunas dentro do `where` não é uma linha de Prisma, e não
+        // precisa ser: o pacote é sempre MAIOR OU IGUAL ao aluguel, então
+        // peneirar pelo aluguel no banco não descarta nenhum candidato válido.
+        // Quem decide é o cálculo do pacote, em JS, mais abaixo. O teto do SQL
+        // já vai com a margem, senão a opção pouco acima do teto é cortada
+        // antes de existir.
+        ...(input.valorMaximo
+          ? { valorSugerido: { lte: tetoComMargem(input.valorMaximo) } }
+          : {}),
       };
 
       // O bairro pedido é resolvido contra os bairros que EXISTEM na carteira
@@ -711,13 +727,16 @@ function fichaDoImovel(i: {
       const exatos = await prisma.imovel.findMany({
         where: { ...base, ...filtroLugar },
         include: { _count: { select: { fotos: true } }, condominio: { select: { nome: true, bairro: true } } },
-        take: 6,
+        // 12, e não 6: o pacote ainda vai peneirar esta lista em JS, e um
+        // `take` apertado aqui faz a peneira devolver duas opções onde existem
+        // seis.
+        take: 12,
       });
       // 2) proximidade: se pediu bairro e sobrou espaço, ofereça imóveis PERTO
       //    (até ~2 km do bairro) que não são do bairro exato.
       const proximidade = new Map<number, number>();
       let lista = exatos;
-      if (bairroBusca && exatos.length < 6) {
+      if (bairroBusca && exatos.length < 12) {
         const candidatos = await prisma.imovel.findMany({
           where: {
             ...base,
@@ -733,7 +752,7 @@ function fichaDoImovel(i: {
         const perto = candidatos
           .filter((c) => (dist.get(c) ?? Infinity) <= RAIO_PROXIMIDADE_KM)
           .sort((a, b) => (dist.get(a) ?? 9) - (dist.get(b) ?? 9))
-          .slice(0, 6 - exatos.length);
+          .slice(0, Math.max(0, 12 - exatos.length));
         perto.forEach((p) => proximidade.set(p.id, dist.get(p) ?? 0));
         lista = [...exatos, ...perto];
       }
@@ -746,19 +765,76 @@ function fichaDoImovel(i: {
           ? await oQueTemNoBairro(base, bairroBusca, { tipo: input.tipo }, "para alugar")
           : "";
 
-      if (lista.length === 0) {
-        if (avisoDoBairro) return `Nenhum ${input.tipo} para alugar em ${bairroBusca}.${avisoDoBairro}`;
-        return "Nenhum imóvel disponível com esses critérios.";
+      // ── O PACOTE DECIDE O QUE CABE, NÃO O ALUGUEL ───────────────────────
+      //
+      // O SQL peneirou pelo aluguel, que é o piso do pacote. Aqui a conta fecha
+      // com condomínio e IPTU, e o que estourou o teto mais a margem cai fora
+      // ANTES de o modelo ver — opção que não cabe não é opção, e deixá-la na
+      // lista é convidar a IA a apresentar como possível o que a pessoa já
+      // disse que não pode pagar.
+      const comPacote = lista.map((i) => {
+        const p = pacoteMensal(i);
+        return { i, p, enc: encaixe(p, input.valorMaximo) };
+      });
+      const cabem = comPacote.filter((x) => x.enc !== "fora");
+      // Dentro do teto primeiro: a regra é priorizar o que cabe e só então
+      // mostrar o que passou um pouco.
+      const ordenados = [
+        ...cabem.filter((x) => x.enc === "dentro"),
+        ...cabem.filter((x) => x.enc === "pouco_acima"),
+      ];
+
+      if (ordenados.length === 0) {
+        // ── BUSCA VAZIA NÃO É NOTÍCIA PARA O CLIENTE, É ORDEM PARA VOCÊ ────
+        //
+        // Este texto é INSTRUÇÃO, e não informação: dizer "nenhum imóvel
+        // disponível com esses critérios" fazia o modelo repassar a frase, e o
+        // cliente lia o resultado de uma consulta em vez de uma corretora
+        // tentando resolver. O texto da ferramenta é a instrução mais PRÓXIMA
+        // da decisão — mais perto que o prompt —, então é aqui que a saída tem
+        // de estar escrita.
+        //
+        // A escada NÃO termina em parceiros. `buscar_em_parceiros` existe, mas
+        // só na lista do AJUDA_CORRETOR: prometer ao cliente que a Maitê vai
+        // falar com corretores parceiros é prometer uma ação que ninguém
+        // executa, que é o erro de 04/08 com outra roupa.
+        const oQueZerou = input.valorMaximo
+          ? `O teto de ${brl(input.valorMaximo)} é do PACOTE (aluguel + condomínio + IPTU), e já foi testado com ${Math.round(MARGEM_ACIMA * 100)}% de folga. `
+          : "";
+        return (
+          `BUSCA SEM RESULTADO. NÃO diga ao cliente que não achou, que não tem, que não encontrou nem que a busca voltou vazia. ${oQueZerou}` +
+          `Faça isto, nesta ordem, e pare no primeiro que resolver:\n` +
+          `1. Busque de novo SEM o filtro menos importante do que ela pediu (o tipo costuma ser o primeiro a soltar).\n` +
+          `2. Se ela deu bairro, busque na região em volta.\n` +
+          `3. Se nada apareceu, PERGUNTE a ela uma flexibilização, uma só e a mais provável: "você está procurando só apartamento ou pode ser casa também?", ` +
+          `"você quer ficar só nessa região ou pode ser algum bairro próximo?", "esse valor é o seu limite mesmo ou se aparecer algo bem perto você considera?".\n` +
+          `4. NUNCA mude o critério por conta própria: pergunte e espere a resposta. Depois dela, busque de novo.\n` +
+          `5. Se ainda assim não houver nada, seja franca: diga que o que você tem hoje não faz o perfil dela, registre o perfil com registrar_lead e ofereça que um corretor procure. ` +
+          `NÃO prometa falar com corretores parceiros: esse caminho não existe hoje, e prometer o que ninguém executa deixa o cliente esperando para sempre.` +
+          avisoDoBairro
+        );
       }
+
       const sfPct = Number(imob?.seguroFiancaPercent ?? 11);
-      return lista
-        .map((i) => {
-          const sf = Number(i.valorSugerido ?? 0) * (sfPct / 100);
+      const acima = ordenados.filter((x) => x.enc === "pouco_acima").length;
+      const cabecalho =
+        `${ordenados.length} opção(ões). FAÇA CURADORIA: mostre no máximo 3, as que mais combinam com o que ela pediu, ` +
+        `e não a lista inteira.` +
+        (acima
+          ? ` ${acima} está(ão) marcada(s) como ACIMA DO TETO: pode mostrar, mas AVISE que passou um pouco, sempre.`
+          : "") +
+        `\n`;
+
+      return cabecalho + ordenados
+        .map(({ i, p, enc }) => {
+          const sf = p.aluguel * (sfPct / 100);
           const perto = proximidade.get(i.id);
           return (
-            `${i.codigo}: ${i.tipo} em ${i.endereco}${lugarDoImovel(i)}${fichaDoImovel(i)} — ${brl(i.valorSugerido)}/mês` +
-            (i.valorCondominio ? ` + cond. ${brl(i.valorCondominio)}` : "") +
-            ` | com garantia seguro-fiança (+${sfPct}%): ${brl(Number(i.valorSugerido ?? 0) + sf)}/mês de aluguel` +
+            `${i.codigo}: ${i.tipo} em ${i.endereco}${lugarDoImovel(i)}${fichaDoImovel(i)} — ${descreverPacote(p, brl)}` +
+            (enc === "pouco_acima" && input.valorMaximo
+              ? ` | ACIMA DO TETO de ${brl(input.valorMaximo)}: avise o cliente que passou um pouco antes de ele perguntar`
+              : "") +
+            ` | com o seguro-fiança (referência desta casa, ${sfPct}% do aluguel; o valor exato só sai na simulação): ${brl(p.total + sf)}/mês` +
             (perto !== undefined ? ` | fica a ${perto.toFixed(1)} km de ${input.bairro}` : "") +
             (i._count.fotos > 0 ? ` | ${i._count.fotos} foto(s) — use enviar_fotos_imovel para mandar` : " | (sem fotos cadastradas)")
           );
@@ -4672,17 +4748,66 @@ Explique quando perguntarem: cuidamos de tudo (divulgação, cobrança, repasse,
   //      pede vem antes da sua fila", "é PROIBIDO condicionar"). Duas regras
   //      opostas no mesmo prompt, e o modelo obedecia à mais próxima.
   //
+  // ── E O QUE MUDOU DEPOIS, SEM DESFAZER NADA DISSO ──────────────────────
+  //
+  // O pedido de revisão de comportamento trouxe o efeito colateral da inversão:
+  // "QUALQUER pista, um só desses já basta" fazia de "estou procurando
+  // apartamento pra alugar" uma busca válida, e a resposta virava a carteira
+  // inteira despejada em oito linhas. O cliente lia um resultado de sistema.
+  //
+  // A separação que resolve as duas coisas não é de grau, é de NATUREZA do que
+  // a pessoa disse:
+  //
+  //   PEDIU PARA VER ("me manda o que você tem")  → mostra. Regra absoluta do
+  //   PROMPT_BASE, intocada: segurar o que ela pediu é chantagem de formulário.
+  //
+  //   DISSE O QUE PROCURA ("procuro apartamento") → não é pedido de lista, é o
+  //   começo de uma conversa. UMA pergunta antes de buscar (região e até
+  //   quanto, que são a mesma decisão e cabem na mesma bolha), e aí busca.
+  //
+  // Uma pergunta não é o interrogatório de oito que o dono mandou tirar em
+  // 10/08, e continua proibido condicionar a entrega a ela.
+  //
   // A explicação mora AQUI e não dentro da string: prompt não é changelog.
   // Citar a regra velha lá dentro, mesmo para negá-la, é mandar o modelo lê-la.
   VENDAS: `${PROMPT_BASE}
 
 Agora o assunto é LOCAÇÃO (vendas): transformar o interessado em contrato assinado.
 
-MOSTRE IMÓVEL LOGO. É a primeira coisa que você faz, não a última.
-- Assim que tiver QUALQUER pista do que ela procura — tipo, bairro, faixa de valor, um só desses já basta — chame buscar_imoveis_disponiveis e MOSTRE, na mesma resposta.
-- Não tem pista nenhuma? Faça UMA pergunta ("o que você procura, e em que região?") e, na resposta seguinte, mostre.
-- Sem nada no bairro pedido, mostre o que tem PERTO. Lista curta é melhor que lista nenhuma.
-- Nunca mande a pessoa esperar por uma lista: se você vai buscar, busque agora.
+ENTENDER, BUSCAR, ESCOLHER, MOSTRAR. Nessa ordem, e sem nunca virar formulário.
+- SE ELA PEDIU PARA VER ("me manda o que você tem", "quero ver as opções", "tem alguma coisa aí?"), você MOSTRA. Isso não se negocia: segurar o que a pessoa pediu para arrancar um dado é chantagem de formulário, e ela vai embora. Busque com o que tiver e mostre na mesma resposta.
+- SE ELA SÓ DISSE O QUE PROCURA ("estou procurando apartamento pra alugar"), isso NÃO é um pedido de lista, é o começo de uma conversa. Aí você faz UMA pergunta antes de buscar, a que faz a busca acertar: a REGIÃO e ATÉ QUANTO ela pode pagar por mês. As duas são a mesma decisão e cabem na mesma frase.
+  Assim: "Me fala em qual região você tá procurando e até que valor, que eu vejo o que eu tenho aqui."
+  E não assim: buscar com "apartamento" e despejar tudo que existe na carteira.
+- Com região e valor na mão, busque. Quartos e exigências (garagem, pet, mobiliado, elevador, suíte, sacada, quintal) vêm DEPOIS, uma por vez, e só as que mudam a escolha.
+- SE ELA JÁ DISSE, NÃO PERGUNTE DE NOVO. "Apartamento de 2 quartos na zona sul até 2.000" já tem tudo: busque agora. Devolver como pergunta o que ela acabou de escrever é o jeito mais rápido de parecer formulário.
+- Sem nada no bairro pedido, mostre o que tem PERTO. Opção perto é melhor que opção nenhuma.
+- Nunca mande a pessoa esperar por uma lista. Se você vai buscar, busque agora, no mesmo turno: "já te mando" sem a busca junto é promessa vazia.
+
+CURADORIA, NÃO CATÁLOGO. A busca te devolve até doze; você mostra no MÁXIMO TRÊS.
+- Escolha as que realmente combinam com o que ela pediu. Imóvel mostrado só para encher a lista é o que faz a conversa parecer resultado de sistema.
+- É PROIBIDO despejar a busca inteira. Seis, oito linhas de imóvel numa bolha é o retrato do robô: ninguém compara oito coisas no WhatsApp, e a pessoa acaba respondendo à última que leu em vez da que serve.
+- Depois de mostrar, PARE e pergunte o que ela achou. A resposta dela é o filtro da busca seguinte: "gostei mas achei pequeno" vira mais metragem, "queria uma região melhor" vira outro bairro.
+
+O ORÇAMENTO DELA É O PACOTE, NÃO O ALUGUEL.
+- Quando ela diz "até 1.700", ela fala do que sai da conta dela todo mês: aluguel mais condomínio mais IPTU. Passe esse número em valorMaximo, que a busca já compara com o pacote inteiro.
+- APRESENTE PELO PACOTE. "Fica 1.650 no total" é o número com que ela decide. Dizer 1.400 de um imóvel que custa 1.730 por mês é uma conta que só aparece na assinatura, e aí a pessoa já se sente enganada.
+- Só trate o valor como aluguel puro se ELA disser ("1.700 de aluguel, fora o condomínio").
+- SE A BUSCA AVISAR QUE FALTA CONDOMÍNIO OU IPTU no cadastro, aquele total é um PISO e você NÃO afirma que é o pacote fechado. Diga que confirma, curto: "vou confirmar aqui rapidinho se esse valor é o pacote ou se o condomínio é à parte". Não arredonde para baixo e não complete o que falta de cabeça.
+
+UM POUCO ACIMA DO TETO PODE. ESCONDIDO, NÃO.
+- A busca já marca o que passou do teto, e só te entrega o que passou POUCO. Mostrar é bom atendimento; mostrar sem avisar é armadilha.
+- A ordem é: primeiro o que cabe. A opção de cima só entra quando falta coisa dentro do teto.
+- E entra avisada, na mesma frase: "esse passou um pouquinho do valor que você me falou, mas achei que valia te mostrar porque encaixa bem no que você procura. Se gostar, a gente manda uma proposta."
+- Não peça licença antes ("posso te mostrar um de cem reais a mais?"). Mostre já avisando: pedir autorização quebra o ritmo da conversa por nada.
+- "A gente manda uma proposta" quer dizer que a imobiliária formaliza a proposta ao proprietário, e SÓ isso. NUNCA diga "ele abaixa", "o proprietário negocia", "a gente consegue fechar por 1.700" ou "ele aceita desconto": você não sabe, e quem descobre depois que não era verdade não fecha.
+
+NUNCA RESPONDA SÓ QUE NÃO TEM. É proibido, e é a regra que mais muda a conversa.
+- "Não tenho", "não temos opções", "não encontrei", "não achei nada", "não há imóveis disponíveis", "não temos nada nessa faixa": todas fecham a porta e entregam à pessoa o resultado de uma consulta em vez de uma corretora.
+- Quando a busca voltar vazia ela te diz exatamente o que fazer, na ordem. Siga aquilo e não improvise.
+- A saída é sempre uma PERGUNTA sua, nunca uma troca silenciosa de critério: "você quer ficar só nessa região ou pode ser um bairro próximo?", "está procurando só apartamento ou casa também serve?", "esse valor é o seu limite mesmo, ou se aparecer algo bem perto você considera?".
+- NÃO prometa corretor parceiro. Você não tem como acionar ninguém, e prometer o que ninguém executa é o erro mais caro deste sistema.
+- O que ela tem que sentir é uma corretora procurando uma saída, nunca uma pesquisa que deu zero.
 Registre o lead assim que souber o nome (registrar_lead).
 A QUALIFICAÇÃO VEM DEPOIS, em cima do interesse que os imóveis criaram — e é aí que ela funciona, porque a pessoa já viu algo que quer. Uma pergunta por vez, de forma leve, sem parecer formulário; nunca dispare tudo de uma vez, e nunca segure imóvel esperando resposta:
 1. o que procura: tipo (casa, apê, comercial) e finalidade (morar, trabalhar).
@@ -4996,7 +5121,17 @@ async function umaPassadaDoAgente(
         (imobiliariaCfg.modeloRemuneracao === "PRIMEIRO_ALUGUEL"
           ? "remuneração = o primeiro aluguel fica com a imobiliária (sem taxa mensal ao proprietário)"
           : `taxa de administração de ${imobiliariaCfg.taxaAdmPercent}% ao mês sobre o aluguel`) +
-        `; garantia seguro-fiança custa ${imobiliariaCfg.seguroFiancaPercent}% do aluguel por mês, paga pelo inquilino junto com a mensalidade.`;
+        // O PERCENTUAL É REFERÊNCIA DA CASA, NÃO REGRA DA SEGURADORA.
+        //
+        // Este número vem de Configurações e é verdadeiro como média praticada,
+        // mas quem crava o valor é a análise: seguradora, perfil e condição da
+        // operação mudam o preço. A Maitê afirmava "aqui o seguro fica em 11%"
+        // como se fosse tabela, e depois a simulação voltava com outro número.
+        // Dizer a referência e deixar a simulação cravar é o que sobrevive aos
+        // dois casos.
+        `; a garantia é seguro-fiança, que costuma ficar em torno de ${imobiliariaCfg.seguroFiancaPercent}% do aluguel por mês, ` +
+        `pago pelo inquilino junto com a mensalidade. Fale esse percentual como REFERÊNCIA ("costuma ficar em torno de"), nunca como valor fechado: ` +
+        `quem crava é a simulação, e o número exato pode variar conforme a seguradora que aprovar.`;
 
       // A CIDADE vem do cadastro, e a IA NUNCA pergunta.
       //

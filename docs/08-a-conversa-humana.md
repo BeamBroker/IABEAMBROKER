@@ -198,3 +198,120 @@ prompt já manda. O que continua proibido é a frase sozinha.
 
 **Mostrar cedo, na compra.** `docs/05` registra que o dono avaliou e decidiu
 manter as três perguntas de produto antes da busca. Nada neste diff mexe nisso.
+
+---
+
+## 5. A segunda revisão: curadoria, pacote e "nunca só não tem"
+
+Segunda leva de 31 itens, no mesmo dia. O eixo é outro: não é mais só o jeito de
+falar, é **o que a Maitê faz antes de abrir a boca**.
+
+### 5.1 As dez perguntas técnicas, respondidas
+
+| # | pergunta | como era | como está |
+|---|---|---|---|
+| 1 | como obtém o aluguel | `Imovel.valorSugerido`, campo único | igual |
+| 2 | como identifica condomínio e IPTU | `valorCondominio` chegava; **`valorIptuMensal` não** | os dois chegam |
+| 3 | como calcula o pacote | **não calculava** | `lib/pacote-locacao.ts` |
+| 4 | como sabe se um valor único já é o pacote | não sabe, e não há flag | continua sem saber, ver abaixo |
+| 5 | o que acontece com dado incompleto | silêncio: aluguel virava o total | o pacote se declara **piso** e manda confirmar |
+| 6 | como aceita margem acima do teto | não aceitava | `MARGEM_ACIMA` de 10% |
+| 7 | envio individual com fotos | `enviar_fotos_imovel` com `apenasCapa=true` já faz | existe, mas o prompt proíbe — ver 5.3 |
+| 8 | como impede o envio de listas | nada impedia | a ferramenta manda **mostrar no máximo 3** |
+| 9 | segunda busca após flexibilização | o modelo chama a ferramenta de novo | igual, e a busca vazia agora ensina a ordem |
+| 10 | acionar parceiros | `buscar_em_parceiros` só no AJUDA_CORRETOR | **não implementado** — ver 5.4 |
+
+**O defeito central era o item 3, e ele era de código.** A busca de locação
+filtrava assim:
+
+```ts
+...(input.valorMaximo ? { valorSugerido: { lte: input.valorMaximo } } : {})
+```
+
+`valorSugerido` é **só o aluguel**. Quem pedia até R$ 1.700 recebia um
+apartamento de R$ 1.500 com R$ 400 de condomínio e R$ 100 de IPTU: dois mil
+reais por mês apresentados como mil e quinhentos, com a conta aparecendo na
+assinatura. E o IPTU não chegava nem na apresentação — o prompt mandava mostrar
+"o valor TOTAL (aluguel + condomínio + IPTU)" e a ferramenta entregava dois dos
+três números, então o modelo somava o que não tinha.
+
+Agora o SQL peneira pelo **aluguel com a margem** (o pacote é sempre maior ou
+igual ao aluguel, então nenhum candidato válido é descartado) e quem decide é o
+cálculo do pacote em JS. Somar três colunas dentro do `where` não é uma linha de
+Prisma, e não precisa ser.
+
+**Sobre o item 4, e é o único que continua em aberto.** Não existe campo que
+diga "este valor já é o pacote". `valorSugerido` é o aluguel por definição do
+schema; se alguém cadastrou o pacote inteiro ali, nada no sistema percebe. Isso
+é qualidade de cadastro, não de código, e o remédio é um **relatório de imóveis
+de locação sem `valorCondominio` ou `valorIptuMensal` preenchidos** — mede o
+tamanho do buraco antes de qualquer decisão. Enquanto ele não existir, o pacote
+incompleto sai marcado como piso e a Maitê oferece confirmar.
+
+### 5.2 A busca vazia virou ordem, não notícia
+
+A ferramenta devolvia `"Nenhum imóvel disponível com esses critérios."` — uma
+**informação**, que o modelo repassava. Agora devolve uma **instrução** com a
+escada inteira: solte o filtro menos importante, tente a região em volta,
+pergunte uma flexibilização (uma só), espere a resposta, busque de novo.
+
+O texto foi para dentro da ferramenta, e não para o prompt, pelo motivo de
+sempre neste sistema: entre duas instruções, o modelo segue a mais próxima da
+decisão. O resultado da ferramenta é o que está mais perto.
+
+### 5.3 O que ficou dependendo de decisão do dono
+
+**A abertura em três bolhas.** O pedido descreve três mensagens seguidas
+("Boa noitee, tudo bem? É a Maitê" / "Me fala em qual região..." / "Se puder me
+passar também com quantos dormitórios..."). `docs/05` diz: uma bolha, duas só
+quando a segunda carrega link ou código, **três nunca**. O que entrou foi a
+substância numa bolha só — região e valor são a mesma decisão e cabem na mesma
+frase — e a pergunta dos dormitórios ficou para o turno seguinte.
+
+**"Vou ver o que eu tenho aqui, já te mando aí."** É literalmente a frase que a
+regra de 04/08 proíbe: "não escreva 'já mando', 'deixa eu ver aqui', 'um
+instante'". Ela nasceu de "as fotos saem em poucos minutos" seguido de nada, com
+o lead esperando para sempre. Não entrou como bolha solta. O que entrou é a
+versão que não mente: a busca roda no mesmo turno e a resposta já sai com o
+resultado.
+
+**Fotos de cada imóvel na apresentação.** O pedido quer capa e descrição por
+imóvel; o prompt manda texto primeiro e foto só depois do sim. A decisão de
+26/08 é a mais explícita do repositório: um cliente real respondeu **"chega de
+mandar foto"**. A ferramenta já suporta (`apenasCapa=true`, uma chamada por
+imóvel), e com a curadoria limitando a três a objeção original perde força — mas
+reverter isso é decisão do dono, não efeito colateral de uma revisão de tom. É
+uma linha de prompt quando ele decidir.
+
+**Titular do seguro fora da família.** O prompt dizia "nunca sugira usar o nome
+de alguém que não seja da família". Passou a aceitar **amigo próximo**, como
+pedido, com a guarda que faltava: a pessoa precisa saber e concordar, porque é
+ela quem assina.
+
+### 5.4 O fluxo de parceiros — o que precisa existir
+
+A frase pedida ("tenho alguns corretores parceiros que podem ter o que você
+procura, vou entrar em contato com eles e já já te chamo aqui") **não foi
+implementada**, e o próprio pedido pede que seja sinalizado se o fluxo não
+existir. Ele não existe:
+
+- `buscar_em_parceiros` existe e funciona, mas está só na lista do
+  `AJUDA_CORRETOR` — é uma ferramenta de consulta para o corretor, que devolve
+  anúncios com link e telefone do anunciante.
+- Não há nada que **acione** um parceiro, nem que devolva a conversa ao cliente
+  depois. "Já já te chamo aqui" seria uma promessa sem ninguém do outro lado.
+
+O que precisa existir para a frase poder ser dita:
+
+1. **Um destino.** Ou a ferramenta entra em VENDAS com resultado direto ao
+   cliente (e aí a promessa some, porque a resposta é imediata), ou existe uma
+   fila de "busca em parceiros" que gera tarefa para um corretor humano.
+2. **Um retorno.** Se for a fila, ela precisa de um gatilho que reabra a
+   conversa quando o corretor responder. Sem isso, a promessa vira o caso de
+   04/08 com outra roupa.
+3. **Um prazo que alguém assuma.** "Já já" não é prazo, e prazo que ninguém
+   cumpre custa mais caro que o não.
+
+Enquanto isso, o passo final da escada é o que dá para cumprir: dizer com
+franqueza que o que a casa tem hoje não faz o perfil dela, registrar o perfil
+com `registrar_lead` e oferecer que um corretor procure.
