@@ -1,0 +1,12 @@
+# Este repositório é texto e regra. Nada aqui roda, então nada disto deveria
+# existir — mas se alguém tentar rodar algo, não vai para o GitHub.
+node_modules/
+.next/
+*.log
+.DS_Store
+
+# NUNCA. Nem um exemplo, nem "só pra testar".
+.env
+.env.*
+*.pem
+*.key
