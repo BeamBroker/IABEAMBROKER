@@ -277,16 +277,36 @@ export function mensagemToque(lead: LeadToque, etapa: number): string {
   // Damha"), que fez o cliente achar que era oferta de outro condomínio.
   const desc = im ? descreverImovel({ ...im, condominio: im.condominio?.nome ?? null }) : null;
   const g = desc?.genero ?? "m";
-  const refImovel = desc
-    ? `${artigo(g)} ${desc.texto}${valor ? ` (${brl(valor)}${compra ? "" : "/mês"})` : ""}`
+  const citado = desc
+    ? `${desc.texto}${valor ? ` (${brl(valor)}${compra ? "" : "/mês"})` : ""}`
     : null;
+  const refImovel = citado ? `${artigo(g)} ${citado}` : null;
+  // A forma de RETOMADA: "daquela casa no condomínio Gaivota I". Cita o imóvel
+  // sem afirmar nada sobre ele, que é o que sobra quando a disponibilidade não
+  // foi conferida.
+  const refLembrei = citado ? `d${demonstrativo(g, "aquele")} ${citado}` : null;
+
+  // ── DISPONIBILIDADE SE CONFERE, NÃO SE SUPÕE ────────────────────────────
+  //
+  // O toque de 21/08 às 10:30 dizia "segue disponível" sobre um imóvel cujo
+  // status ninguém tinha olhado: a consulta desta cadência (processarFollowUps)
+  // filtra o LEAD, nunca o imóvel, e traz a linha inteira do Imovel no include.
+  // Ou seja: o dado estava na mão o tempo todo e a frase o ignorava. Um imóvel
+  // alugado na semana passada recebia "segue disponível" igual.
+  //
+  // Confirmado DISPONIVEL, a frase pode afirmar. Em qualquer outro caso ela não
+  // afirma NEM O CONTRÁRIO: ALUGADO, EM_REFORMA e INATIVO querem dizer coisas
+  // diferentes, e "esse já saiu" sobre um imóvel em reforma é uma segunda
+  // mentira para consertar a primeira. Sem certeza, a Maitê oferece conferir,
+  // que é o que uma corretora faz.
+  const disponivel = im?.status === "DISPONIVEL";
   const sim = lead.simulacoes[0];
 
   // Simulação rodando: quem deve resposta somos NÓS. A Maitê dá notícia, não
   // cobra — cobrar quem está esperando por você é o pior toque possível.
   if (sim?.status === "PENDENTE") {
     if (etapa === 1)
-      return `Oi ${nome}, aqui é a Maitê. Sua simulação do seguro ainda está sendo processada. Assim que sair o retorno eu te falo aqui, pode deixar.`;
+      return `${nome}, sua simulação do seguro ainda está sendo processada. Assim que sair o retorno eu te falo aqui, pode deixar.`;
     if (etapa === 2)
       return `${nome}, ainda não voltou o resultado da simulação. Não esqueci de você. Enquanto isso, se quiser ver mais alguma opção, é só me falar.`;
     return `${nome}, seguimos sem retorno da seguradora e não quero te deixar no vácuo. Vou pedir para a equipe olhar e te retorno. Se preferir falar direto com alguém daqui, me avisa.`;
@@ -295,26 +315,34 @@ export function mensagemToque(lead: LeadToque, etapa: number): string {
   // Escolheu o imóvel e parou na hora dos dados. É AQUI que mais gente cai.
   if (refImovel && !sim && !compra) {
     if (etapa === 1)
-      return `Oi ${nome}, aqui é a Maitê. Ficou faltando só os seus dados pra eu fazer a consulta do seguro de ${refImovel}. É rapidinho de preencher: nome completo, CPF, data de nascimento, telefone e e-mail.`;
+      return `${nome}, ficou faltando só os seus dados pra eu fazer a consulta do seguro de ${refImovel}. É rapidinho, preciso do nome completo, CPF, data de nascimento, telefone e e-mail.`;
     if (etapa === 2)
-      return `${nome}, ${refImovel} continua disponível. Se ficou alguma dúvida sobre o seguro ou sobre os dados que pedi, me pergunta. Prefiro resolver isso do que te deixar sem resposta.`;
+      return disponivel
+        ? `${nome}, ${refImovel} continua disponível. Se ficou alguma dúvida sobre o seguro ou sobre os dados que pedi, me pergunta. Prefiro resolver isso do que te deixar sem resposta.`
+        : `${nome}, se ficou alguma dúvida sobre o seguro ou sobre os dados que pedi, me pergunta. Prefiro resolver isso do que te deixar sem resposta.`;
     return `${nome}, sem os dados eu não consigo destravar a visita, e não quero ficar te cobrando. Se mudou de ideia ou apareceu outra coisa, tudo bem, é só me dizer. Se ainda quiser ${demonstrativo(g, "esse")}, é só mandar que eu sigo na hora.`;
   }
 
   // Compra: quem escolheu imóvel de venda para na qualificação, não no seguro.
   if (refImovel && compra) {
     if (etapa === 1)
-      return `Oi ${nome}, aqui é a Maitê. ${refImovel} que você viu segue disponível. Quer que eu veja as condições de financiamento pra ${pronome(g)}?`;
+      return disponivel
+        ? `${nome}, ${refImovel} que você viu segue disponível. Quer que eu veja as condições de financiamento pra ${pronome(g)}?`
+        : `${nome}, lembrei ${refLembrei} que você viu. Quer que eu confirme as condições ${g === "f" ? "dela" : "dele"} pra você?`;
     if (etapa === 2)
-      return `${nome}, ${refImovel} continua de pé. Se quiser, eu já adianto a parte da análise pra você saber quanto o banco libera antes de decidir.`;
+      return disponivel
+        ? `${nome}, ${refImovel} continua de pé. Se quiser, eu já adianto a parte da análise pra você saber quanto o banco libera antes de decidir.`
+        : `${nome}, se quiser, eu já adianto a parte da análise pra você saber quanto o banco libera antes de decidir.`;
     return `${nome}, não quero te tomar tempo à toa. Se ainda faz sentido ${acao}, me responde aqui que eu retomo de onde a gente parou.`;
   }
 
   // Viu opções mas não escolheu nenhuma, ou nem chegou a ver.
   if (etapa === 1)
     return refImovel
-      ? `Oi ${nome}, aqui é a Maitê. ${refImovel} segue disponível. O que você achou d${g === "f" ? "ela" : "ele"}?`
-      : `Oi ${nome}, aqui é a Maitê. Consegui separar umas opções pra você ${acao}. Me diz o bairro e a faixa de valor que já te mando.`;
+      ? disponivel
+        ? `${nome}, ${refImovel} segue disponível. O que você achou d${g === "f" ? "ela" : "ele"}?`
+        : `${nome}, fiquei pensando ${refLembrei} que te mandei. O que você achou d${g === "f" ? "ela" : "ele"}?`
+      : `${nome}, consegui separar umas opções pra você ${acao}. Me diz o bairro e a faixa de valor que já te mando.`;
   if (etapa === 2)
     return refImovel
       ? `${nome}, se ${demonstrativo(g, "aquele")} não te agradou, sem problema. Me diz o que não encaixou (tamanho, bairro, valor) que eu procuro outros com esse ajuste.`
@@ -565,8 +593,11 @@ export async function processarFollowUps(): Promise<number> {
     if (lead.retomarEm) {
       if (lead.retomarEm.getTime() > agora.getTime()) continue;
       const quandoDisse = lead.retomarEm.toLocaleDateString("pt-BR");
+      // Sem reapresentação, mesmo depois de meses. A frase seguinte já é
+      // "você tinha me falado" — anunciar "aqui é a Maitê" antes dela é dizer,
+      // na mesma respiração, que a conversa continua e que ninguém lembra dela.
       const texto =
-        `Oi ${lead.nome.split(" ")[0]}, aqui é a Maitê. Você tinha me falado que ia resolver ` +
+        `${lead.nome.split(" ")[0]}, você tinha me falado que ia resolver ` +
         `aquela pendência do nome até ${quandoDisse}. Conseguiu? Se já estiver limpo, a gente retoma de onde parou.`;
       const envio = await enviarToque(lead, texto).catch(() => null);
       if (envio?.enviado === false) continue; // tenta de novo no próximo ciclo

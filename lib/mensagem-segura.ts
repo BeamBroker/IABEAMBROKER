@@ -16,6 +16,8 @@
 // INTEIRA (paraOCliente abaixo), o cliente recebia a frase neutra no lugar da
 // resposta que a IA tinha escrito certa. Ver PROIBIDOS_PALAVRA.
 
+import { falaDeSistema } from "@/lib/fala-de-sistema";
+
 // Termos que denunciam vazamento de infraestrutura. Case-insensitive.
 const PROIBIDOS = [
   "anthropic",
@@ -111,5 +113,28 @@ export function paraOCliente(texto: string): string {
     );
     return RESPOSTA_NEUTRA;
   }
+
+  // ── A FALA DE SISTEMA SÓ É MEDIDA AQUI. NÃO BLOQUEIA. ──────────────────
+  //
+  // "Não achei Damha na nossa carteira" não tem nome de variável nenhum: é
+  // português perfeito contando ao cliente que existe uma consulta. O conserto
+  // é o bloco NÃO NARRE O SISTEMA, no PROMPT_BASE; o que acontece aqui é a
+  // medição de quanto ainda escapa.
+  //
+  // E é medição, e não bloqueio, por uma razão que este arquivo já pagou caro:
+  // trocar a mensagem inteira pela neutra por causa de um padrão é o defeito do
+  // "cota" engolindo "cotação do seguro-fiança". Metade destas frases tem uma
+  // versão legítima a uma palavra de distância ("não achei casa disponível no
+  // Centro" é a resposta CERTA), e o custo de silenciar a resposta boa é maior
+  // que o da frase ruim. Se o log mostrar que continua saindo depois do prompt,
+  // a decisão de bloquear passa a ter dado em cima. Hoje ela não tem.
+  const fala = falaDeSistema(limpo);
+  if (fala) {
+    console.warn(
+      `[FALA-DE-SISTEMA:${fala}] a resposta expôs o funcionamento interno ao cliente (não foi bloqueada):`,
+      limpo.slice(0, 300)
+    );
+  }
+
   return limpo;
 }

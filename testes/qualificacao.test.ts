@@ -581,3 +581,40 @@ describe("fichaRespondida — o que vai para o aviso do corretor", () => {
     expect(fichaRespondida({})).toEqual([]);
   });
 });
+
+// ── A PERGUNTA DO NOME É DE UMA POLARIDADE SÓ ──────────────────────────────
+//
+// A regra está escrita com todas as letras em docs/05 e repetida no prompt de
+// COMPRA_VENDA: "NUNCA pergunte 'está limpo OU tem restrição?' — a pessoa
+// responde 'tá sim' e não há como saber a qual metade ela disse sim. Já
+// aconteceu: ela quis dizer que estava limpo, foi lida como restrição, e o
+// atendimento morreu ali."
+//
+// A pergunta disjuntiva sobrevivia AQUI, e daqui ela VENCIA o prompt: o texto
+// deste campo é injetado verbatim no resultado da ferramenta ("PRÓXIMA
+// PERGUNTA, faça só esta agora", lib/agentes.ts), e entre duas instruções
+// opostas o modelo segue a mais próxima da decisão — a da ferramenta.
+describe("a pergunta do nome restrito, como ela chega ao modelo", () => {
+  const doNome = PERGUNTAS.find((p) => p.chave === "nomeRestrito")!;
+
+  it("existe, e é a que a escada usa", () => {
+    expect(doNome).toBeDefined();
+  });
+
+  it("pergunta só a polaridade LIMPO", () => {
+    expect(doNome.pergunta).toBe("Seu nome está limpo?");
+  });
+
+  it("não oferece as duas metades na mesma frase", () => {
+    expect(doNome.pergunta).not.toMatch(/\bou\b/i);
+    expect(doNome.pergunta).not.toMatch(/restri[çc]/i);
+    expect(doNome.pergunta).not.toMatch(/serasa|spc/i);
+  });
+
+  it("e nenhuma outra pergunta da escada é disjuntiva sobre restrição", () => {
+    for (const p of PERGUNTAS) {
+      if (p.chave === "nomeRestrito") continue;
+      expect(p.pergunta).not.toMatch(/limpo\s+ou\b/i);
+    }
+  });
+});

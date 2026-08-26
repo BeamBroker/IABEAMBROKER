@@ -97,6 +97,14 @@ type DadosDoToque = {
   valorAtualizado: Prisma.Decimal;
   diasAtraso: number;
   temPix: boolean;
+  /** Este é o PRIMEIRO toque desta fatura? Só ele se apresenta.
+   *
+   *  Não dá para deduzir do degrau: a régua não começa sempre no LEMBRETE.
+   *  Fatura que só entra no sistema com 20 dias de atraso entra direto num
+   *  degrau adiantado (ver `degrauDevido`), e aí o primeiro contato que a
+   *  pessoa recebe seria o quinto texto. Quem sabe é o chamador, que tem
+   *  `cobrancaEtapa` na mão. */
+  primeiroToque: boolean;
 };
 
 // O texto de cada degrau, na voz da Maitê: direta, sem emoji, sem travessão.
@@ -106,40 +114,57 @@ export function textoDoToque(chave: Degrau["chave"], d: DadosDoToque): string {
   const nome = d.nome.split(" ")[0];
   const ref = `${competenciaBr(d.competencia)} do imóvel ${d.endereco}`;
   const pix = d.temPix ? " Te mando o PIX copia e cola na sequência." : "";
+  // A APRESENTAÇÃO É DO PRIMEIRO TOQUE, E SÓ DELE.
+  //
+  // A régua manda até seis mensagens para a MESMA pessoa sobre a MESMA fatura.
+  // Abrir todas com "aqui é a Maitê" é o carimbo do disparo automático, e no
+  // último degrau vira contradição escrita: "aqui é a Maitê" seguido de "as
+  // minhas mensagens não tiveram retorno" diz, na mesma frase, que ela nunca
+  // falou com você e que já falou cinco vezes.
+  //
+  // O corpo de cada degrau chega SEMPRE em minúscula, porque sem apresentação
+  // ele emenda na vírgula depois do nome. Com apresentação, a frase recomeça
+  // depois de um ponto e a inicial precisa subir. É este detalhe exato que
+  // deixou "aqui é a Maitê. a casa no condomínio" chegar em produção pelo lado
+  // do follow-up (ver lib/referencia-imovel.ts).
+  const abrir = (corpo: string) =>
+    d.primeiroToque
+      ? `Oi ${nome}, aqui é a Maitê. ${corpo.charAt(0).toUpperCase()}${corpo.slice(1)}`
+      : `${nome}, ${corpo}`;
 
   switch (chave) {
     case "LEMBRETE":
       return (
-        `Oi ${nome}, aqui é a Maitê. Passando só pra lembrar que o aluguel de ${ref} ` +
+        abrir(`passando só pra lembrar que o aluguel de ${ref} `) +
         `vence em ${dataBr(d.vencimento)}, no valor de ${brl(d.valorOriginal)}.${pix}`
       );
     case "VENCE_HOJE":
       return (
-        `Oi ${nome}, aqui é a Maitê. O aluguel de ${ref} vence hoje: ${brl(d.valorOriginal)}. ` +
+        abrir(`o aluguel de ${ref} vence hoje, ${brl(d.valorOriginal)}. `) +
         `Se já pagou, é só desconsiderar.${pix}`
       );
     case "VENCEU":
       return (
-        `Oi ${nome}, aqui é a Maitê. O aluguel de ${ref} venceu em ${dataBr(d.vencimento)} e ` +
+        abrir(`o aluguel de ${ref} venceu em ${dataBr(d.vencimento)} e `) +
         `ainda consta em aberto: ${brl(d.valorAtualizado)} com os encargos de hoje. ` +
         `Se o pagamento já saiu, me avisa aqui que eu confiro.${pix}`
       );
     case "ENCARGOS":
       return (
-        `Oi ${nome}, aqui é a Maitê. O aluguel de ${ref} está com ${d.diasAtraso} dias de atraso. ` +
+        abrir(`o aluguel de ${ref} está com ${d.diasAtraso} dias de atraso. `) +
         `Hoje o valor é ${brl(d.valorAtualizado)} (${brl(d.valorOriginal)} mais multa e juros), e ele ` +
         `cresce um pouco a cada dia. Se ficou apertado esse mês, me fala que a gente vê o que dá pra fazer.${pix}`
       );
     case "ACORDO":
       return (
-        `Oi ${nome}, aqui é a Maitê. O aluguel de ${ref} está há ${d.diasAtraso} dias em aberto, ` +
+        abrir(`o aluguel de ${ref} está há ${d.diasAtraso} dias em aberto, `) +
         `hoje em ${brl(d.valorAtualizado)}. Antes de isso virar um problema maior, quero te oferecer ` +
-        `uma saída: dá pra parcelar esse valor num acordo. Me responde aqui quanto você consegue pagar ` +
+        `uma saída. Dá pra parcelar esse valor num acordo. Me responde aqui quanto você consegue pagar ` +
         `de entrada e em quantas vezes, que eu levo pra aprovação.`
       );
     case "ULTIMO":
       return (
-        `Oi ${nome}, aqui é a Maitê. O aluguel de ${ref} está há ${d.diasAtraso} dias em aberto, ` +
+        abrir(`o aluguel de ${ref} está há ${d.diasAtraso} dias em aberto, `) +
         `hoje em ${brl(d.valorAtualizado)}, e as minhas mensagens não tiveram retorno. ` +
         `A partir de agora quem cuida desse caso é a equipe da imobiliária, que vai te procurar ` +
         `para resolver. Se preferir adiantar, me responde aqui hoje que eu ainda consigo encaminhar ` +
@@ -254,6 +279,8 @@ export async function processarReguaCobranca(imobiliariaId?: number): Promise<nu
         vencimento: f.vencimento,
         valorOriginal: f.valorTotal,
         valorAtualizado: atualizado,
+        // 0 quer dizer que nenhum degrau saiu ainda para esta fatura.
+        primeiroToque: f.cobrancaEtapa === 0,
         diasAtraso: atraso,
         temPix: Boolean(f.pixCopiaECola),
       });

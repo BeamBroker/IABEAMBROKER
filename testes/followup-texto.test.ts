@@ -5,7 +5,12 @@ import { mensagemToque } from "@/lib/followup";
 
 type Lead = Parameters<typeof mensagemToque>[0];
 
-/** O lead 342 de produção, do toque de 21/08 às 10:30. */
+/** O lead 342 de produção, do toque de 21/08 às 10:30.
+ *
+ *  `status` NÃO vem preenchido por padrão de propósito: é assim que a consulta
+ *  da cadência entrega o imóvel quando ninguém conferiu nada, e é esse o caso
+ *  que produzia "segue disponível" sem base. Quem quer o outro caminho passa
+ *  o status explicitamente. */
 function leadReal(over: Record<string, unknown> = {}): Lead {
   return {
     nome: "Roberto Almeida",
@@ -25,6 +30,12 @@ function leadReal(over: Record<string, unknown> = {}): Lead {
   } as unknown as Lead;
 }
 
+/** O mesmo lead, com o imóvel confirmado disponível. */
+function leadDisponivel(over: Record<string, unknown> = {}): Lead {
+  const base = leadReal(over) as unknown as { imovel: Record<string, unknown> };
+  return { ...base, imovel: { ...base.imovel, status: "DISPONIVEL" } } as unknown as Lead;
+}
+
 describe("o toque de 21/08 que confundiu o cliente", () => {
   it("cita o CONDOMÍNIO, não a avenida", () => {
     // "em Avenida Miguel Damha, 1515" fez o cliente entender que era oferta de
@@ -36,13 +47,13 @@ describe("o toque de 21/08 que confundiu o cliente", () => {
   });
 
   it("concorda em gênero: 'a casa', nunca 'o casa'", () => {
-    const t = mensagemToque(leadReal(), 1);
+    const t = mensagemToque(leadDisponivel(), 1);
     expect(t).toContain("a casa no condomínio Gaivota I");
     expect(t).not.toContain("o casa");
   });
 
   it("o pronome também concorda: 'pra ela'", () => {
-    const t = mensagemToque(leadReal(), 1);
+    const t = mensagemToque(leadDisponivel(), 1);
     expect(t).toContain("pra ela");
     expect(t).not.toContain("pra ele");
   });
@@ -51,16 +62,18 @@ describe("o toque de 21/08 que confundiu o cliente", () => {
     // `brl()` separa "R$" do número com ESPAÇO NÃO-QUEBRÁVEL (U+00A0), como
     // manda o Intl. Comparar contra um espaço comum falha com as duas strings
     // idênticas na tela — normalizar aqui é o que torna a asserção legível.
-    const texto = mensagemToque(leadReal(), 1).replace(/\u00a0/g, " ");
+    const texto = mensagemToque(leadDisponivel(), 1).replace(/\u00a0/g, " ");
     expect(texto).toBe(
-      "Oi Roberto, aqui é a Maitê. a casa no condomínio Gaivota I (R$ 1.250.000,00) " +
+      "Roberto, a casa no condomínio Gaivota I (R$ 1.250.000,00) " +
         "que você viu segue disponível. Quer que eu veja as condições de financiamento pra ela?"
     );
   });
 
   it("imóvel masculino continua certo", () => {
     const t = mensagemToque(
-      leadReal({ imovel: { tipo: "Apartamento", bairro: "Centro", valorVenda: 300000, condominio: null } }),
+      leadReal({
+        imovel: { tipo: "Apartamento", bairro: "Centro", valorVenda: 300000, condominio: null, status: "DISPONIVEL" },
+      }),
       1
     );
     expect(t).toContain("o apartamento no Centro");
@@ -72,4 +85,92 @@ describe("o toque de 21/08 que confundiu o cliente", () => {
     expect(t).toContain("quiser essa");
     expect(t).not.toContain("quiser esse");
   });
+});
+
+// ── O QUE A MENSAGEM DE 21/08 AINDA DIZIA SEM SABER ────────────────────────
+//
+// O conserto daquele toque pegou o artigo e a referência, e deixou passar a
+// afirmação: "segue disponível" sobre um imóvel cujo status ninguém consultou.
+// A consulta da cadência filtra o LEAD, nunca o imóvel, e traz a linha inteira
+// do Imovel no include — o dado estava na mão e a frase o ignorava.
+describe("disponibilidade se confere, não se supõe", () => {
+  it("sem status conferido, NÃO afirma que segue disponível", () => {
+    const t = mensagemToque(leadReal(), 1);
+    expect(t).not.toContain("segue disponível");
+    expect(t).not.toContain("continua disponível");
+  });
+
+  it("sem status conferido, retoma citando o imóvel e oferece confirmar", () => {
+    const texto = mensagemToque(leadReal(), 1).replace(/\u00a0/g, " ");
+    expect(texto).toBe(
+      "Roberto, lembrei daquela casa no condomínio Gaivota I (R$ 1.250.000,00) " +
+        "que você viu. Quer que eu confirme as condições dela pra você?"
+    );
+  });
+
+  it("imóvel ALUGADO não vira 'segue disponível'", () => {
+    const t = mensagemToque(leadDisponivel({}), 1);
+    expect(t).toContain("segue disponível"); // controle: DISPONIVEL pode afirmar
+    const alugado = mensagemToque(
+      leadReal({
+        imovel: {
+          tipo: "Casa de Condomínio",
+          bairro: "Gaivota I",
+          valorVenda: 1250000,
+          condominio: { nome: "Gaivota I" },
+          status: "ALUGADO",
+        },
+      }),
+      1
+    );
+    expect(alugado).not.toContain("disponível");
+  });
+
+  it("e também não afirma o contrário: em reforma não vira 'já saiu'", () => {
+    // ALUGADO, EM_REFORMA e INATIVO querem dizer coisas diferentes. "Esse já
+    // saiu" sobre um imóvel em reforma é uma segunda afirmação sem base para
+    // consertar a primeira.
+    const t = mensagemToque(
+      leadReal({
+        imovel: {
+          tipo: "Casa de Condomínio",
+          bairro: "Gaivota I",
+          valorVenda: 1250000,
+          condominio: { nome: "Gaivota I" },
+          status: "EM_REFORMA",
+        },
+      }),
+      1
+    );
+    expect(t).not.toMatch(/j[áa] saiu|foi alugad|foi vendid|n[ãa]o est[áa] mais/i);
+    expect(t).toContain("lembrei daquela casa");
+  });
+
+  it("a etapa 2 da compra também não afirma sem conferir", () => {
+    expect(mensagemToque(leadReal(), 2)).not.toContain("continua de pé");
+    expect(mensagemToque(leadDisponivel(), 2)).toContain("continua de pé");
+  });
+});
+
+// ── A REAPRESENTAÇÃO ───────────────────────────────────────────────────────
+//
+// "Oi Samuel, aqui é a Maitê" numa conversa que aconteceu de manhã é o carimbo
+// do disparo automático. O follow-up é, por definição, continuação: se existe
+// um toque, existe uma conversa antes dele.
+describe("a Maitê não se reapresenta no follow-up", () => {
+  const casos: [string, Lead, number][] = [
+    ["compra, etapa 1", leadDisponivel(), 1],
+    ["compra, sem conferir, etapa 1", leadReal(), 1],
+    ["locação, etapa 1", leadReal({ finalidade: "LOCACAO" }), 1],
+    ["locação com simulação pendente", leadReal({ finalidade: "LOCACAO", simulacoes: [{ status: "PENDENTE" }] }), 1],
+    ["sem imóvel escolhido", leadReal({ imovel: null }), 1],
+  ];
+
+  for (const [rotulo, lead, etapa] of casos) {
+    it(`${rotulo} abre pelo nome, sem se apresentar`, () => {
+      const t = mensagemToque(lead, etapa);
+      expect(t).not.toContain("aqui é a Maitê");
+      expect(t.startsWith("Roberto")).toBe(true);
+    });
+  }
 });

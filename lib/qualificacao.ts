@@ -163,7 +163,20 @@ export const PERGUNTAS: Pergunta[] = [
   {
     chave: "nomeRestrito",
     rotulo: "Nome restrito",
-    pergunta: "Seu nome está limpo ou tem alguma restrição (Serasa, SPC)?",
+    // UMA POLARIDADE SÓ, e esta linha é a mesma decisão que o PROMPT_BASE e o
+    // prompt de COMPRA_VENDA escrevem com todas as letras: NUNCA "está limpo OU
+    // tem restrição?". A pessoa responde "tá sim" e não há como saber a qual
+    // metade ela disse sim. Já aconteceu: ela quis dizer que estava limpo, foi
+    // lida como restrição, e o atendimento morreu ali (docs/05).
+    //
+    // A pergunta disjuntiva sobrevivia AQUI, e daqui ela vencia o prompt: o
+    // texto deste campo é injetado verbatim no resultado da ferramenta, em
+    // lib/agentes.ts:3232 ("PRÓXIMA PERGUNTA, faça só esta agora"), :3309 e
+    // :1681 — e entre duas instruções opostas o modelo segue a MAIS PRÓXIMA da
+    // decisão, que é a da ferramenta, não a do prompt. Dois outros pontos do
+    // mesmo arquivo (:1700 e :4234) já escreviam a versão certa na mão, cada um
+    // contornando este campo em vez de consertá-lo.
+    pergunta: "Seu nome está limpo?",
     porque: "Nome restrito não passa no banco. Descobrir depois de qualificar tudo desperdiça o atendimento inteiro.",
   },
   {
