@@ -11,9 +11,9 @@ que parecem estranhas aqui foram escritas depois de custarem um cliente.
 ## O que este repositório é, e o que ele não é
 
 **É** a cópia dos arquivos que decidem o que a IA fala, quando fala, para quem
-encaminha e como persegue um lead que sumiu. São 24 arquivos de comportamento e
-23 arquivos de teste, tirados do sistema `administrativo`, que é o CRM completo
-da Beam Broker.
+encaminha, como persegue um lead que sumiu e em que ponto ela **cala** e devolve
+a conversa a uma pessoa. São 35 arquivos de comportamento e 34 arquivos de
+teste, tirados do sistema `administrativo`, que é o CRM completo da Beam Broker.
 
 **Não é** o sistema. Aqui não há banco, não há telas, não há o webhook que
 recebe a mensagem do WhatsApp, não há `package.json`. **Nada aqui roda.** Você
@@ -40,7 +40,8 @@ WhatsApp do cliente
         │   • qualquer outro                        → RECEPCAO
         ▼
   lib/agentes.ts · executarAgente()      ← O CORAÇÃO. 5.300 linhas.
-        │   monta o prompt = PROMPT_BASE + prompt da área (+ TROCA_DE_AREA)
+        │   monta o prompt = PROMPT_BASE + prompt da área + TROCA_DE_AREA
+        │   (a regra de troca vai no FIM: o que está perto da decisão pesa mais)
         │   entrega ao modelo a lista de ferramentas daquela área
         │   até DUAS passadas: se a área mudou no meio, descarta o texto
         │   da primeira e refaz com o prompt certo
@@ -52,6 +53,14 @@ Em paralelo, sem ninguém escrever nada, rodam os motores de perseguição:
 `followup.ts` (reengajamento), `regua-cobranca.ts` (quem deve),
 `relacionamento.ts` (antes de virar problema), `pos-visita.ts`,
 `pos-documentos.ts`, `abordagem-portal.ts` (lead que veio de portal).
+
+E há uma **fronteira**, decidida em reunião no dia 26/08: quando o lead passa
+para o vendedor, a conversa recebe `iaPausada` e **a Maitê não fala mais com o
+cliente** — daí em diante ela só lembra o corretor. Se você escrever, em qualquer
+prompt, algo como "continue ajudando depois de passar para o corretor", está
+desfazendo essa decisão — e a trava do banco vai calar a IA de qualquer jeito,
+produzindo o pior dos dois mundos: uma despedida que promete continuidade,
+seguida de silêncio. Leia `docs/07` antes de encostar nesse trecho.
 
 ## Onde mexer o quê
 
@@ -65,12 +74,17 @@ Em paralelo, sem ninguém escrever nada, rodam os motores de perseguição:
 | como ela entende o nome de um bairro/condomínio | `lib/acoes-bairro.ts`, `lib/condominios.ts` |
 | quantos toques de reengajamento e de quanto em quanto tempo | `lib/followup.ts` → `CADENCIA_HORAS` |
 | o texto das mensagens de reengajamento | `lib/followup.ts` |
+| **onde a IA para de falar com o cliente** | `lib/fronteira-ia.ts` (e o texto da despedida, em `passar_para_corretor`) |
+| a cobrança no WhatsApp do corretor (15min/4h/24h) | `lib/cadencia-vendedor.ts` · `lib/cobranca-vendedor.ts` |
+| a cobrança por tarefa na agenda dele (24h/72h/168h) | `lib/atividades-cadencia.ts` |
+| a marca de origem que autoriza o atendimento automático | `lib/brinco.ts` |
 | quando o corretor recebe o lead | `lib/distribuicao.ts` + o gatilho em `lib/agentes.ts` |
 | o texto do aviso que chega ao corretor | `lib/aviso-lead.ts` |
 | o nome da atendente | `lib/ia-config.ts` (mas o nome real vem do banco, por imobiliária) |
+| o modelo de cada área | `lib/agentes.ts` → `MODELO_POR_AGENTE` (hoje: **todas em Sonnet 5**) |
 | como ela escreve quando a resposta virar áudio | `lib/prompt-audio.ts` |
 
-## As cinco regras que você não pode violar
+## As seis regras que você não pode violar
 
 **1. Multi-tenant. Nenhum dado atravessa a parede.**
 Cada imobiliária tem a própria carteira, os próprios leads, os próprios
@@ -99,7 +113,13 @@ ferramentas dela no fim de `toolsPorAgente`.
 Nem em código, nem em comentário, nem em prompt, nem em mensagem de erro. Chave
 de API, senha, token e o telefone de cliente não entram neste repositório.
 
-**5. O comentário é a documentação.**
+**5. As três cadências não se misturam.**
+`followup.ts` fala com o **cliente** (1h/1d/3d). `atividades-cadencia.ts` e
+`cadencia-vendedor.ts` falam com o **corretor** — a primeira por tarefa na
+agenda, a segunda fazendo o celular dele apitar. A 1 e a 3 **nunca podem se
+encontrar**: fundir os módulos é desfazer a fronteira. Ver `docs/07`.
+
+**6. O comentário é a documentação.**
 Este código usa comentário como memória institucional: quase toda regra
 estranha tem, do lado, o caso real que a produziu — com data e, muitas vezes, o
 diálogo. **Quando mudar comportamento, escreva o porquê ao lado.** Sem isso, a

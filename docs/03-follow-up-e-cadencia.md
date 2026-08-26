@@ -1,8 +1,15 @@
 # Follow-up e cadência — o que a IA faz quando ninguém escreve
 
-Metade do trabalho da Maitê acontece sem o cliente ter mandado nada. São cinco
-motores independentes, todos disparados por cron, todos respeitando horário
-comercial de Brasília.
+Metade do trabalho da Maitê acontece sem o cliente ter mandado nada. São motores
+independentes, todos disparados por cron, todos respeitando horário comercial de
+Brasília.
+
+> **Três cadências, e elas não se misturam.** Esta página descreve a que fala com
+> o CLIENTE. Depois que o lead passa para o vendedor, essa cadência **para** e
+> entram as que falam com o CORRETOR — por tarefa (`atividades-cadencia.ts`,
+> 24h/72h/168h) e por WhatsApp dele (`cadencia-vendedor.ts`, 15min/4h/24h). A
+> fronteira entre as duas metades está em `docs/07`, e fundi-las é desfazer a
+> decisão da reunião de 26/08.
 
 Nenhum deles é conversa: são mensagens que ela **inicia**. Por isso as regras
 aqui são mais duras que no atendimento — uma mensagem indesejada faz a pessoa

@@ -79,14 +79,21 @@ vezes — a segunda é quem fala com ele.
 
 ## 6. Que modelo roda
 
-| Área | Modelo | Por quê |
-|---|---|---|
-| `RECEPCAO` | Haiku | classificação: barata e suficiente |
-| `ADMINISTRACAO` | Haiku | consulta a dados que já vêm prontos no contexto |
-| `VENDAS`, `COMPRA_VENDA`, `CAPTACAO` | Sonnet | negociação: onde a qualidade vira receita |
-| `AJUDA_CORRETOR` | Sonnet | é quem mais tem ferramentas e ESCREVE no CRM |
+**Todas as seis áreas rodam Sonnet 5** desde 26/08.
 
-Sobrescrevível por variável de ambiente, para testar sem deploy.
+A régua anterior era "classificação e consulta no Haiku; negociação no Sonnet", e
+valia enquanto as duas áreas baratas só faziam trabalho barato. Deixaram de
+fazer: a **recepção** decide para onde vai todo primeiro contato da casa (1.985
+turnos em 30 dias, o agente mais chamado), e errar ali não devolve uma resposta
+ruim — manda o cliente para a área errada. A **administração** chegou a 13
+ferramentas, uma acima da régua de 12 deste sistema, e em 26/08 deixou de
+encaminhar um pedido de locação prometendo uma busca que não podia fazer.
+
+Custo da troca, medido nos mesmos 30 dias: US$ 4,63 → US$ 13,89 por mês, contra
+uma conta de IA de US$ 23 no sistema inteiro.
+
+`MODELO_HAIKU` continua vindo de variável de ambiente: é o caminho de voltar
+atrás sem deploy, se o volume mudar de escala.
 
 ## 7. Quando a IA não pode rodar
 

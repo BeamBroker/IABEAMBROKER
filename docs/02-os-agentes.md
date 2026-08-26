@@ -6,7 +6,12 @@ assunto certo. Chamamos de "agente" internamente; para quem está do outro lado
 é a mesma atendente.
 
 Todo prompt de área é `PROMPT_BASE` + o roteiro dela. As quatro áreas de cliente
-recebem também o bloco `TROCA_DE_AREA`.
+recebem também o bloco `TROCA_DE_AREA` — **no fim**, e a posição é o conserto de
+26/08: no topo, a regra ficava a três mil palavras da decisão, e o roteiro da
+área ("você atende quem já é da carteira") ganhava dela. No fim, é a última coisa
+que o modelo lê antes de responder.
+
+Todas as seis rodam **Sonnet 5**.
 
 ---
 
@@ -112,9 +117,17 @@ proprietário (tom de quem presta contas, com números).
 Os dados reais do cliente entram no prompt, montados a partir do banco. Nunca
 revele dados de outro cliente.
 
-> Está **em observação**: com 13 ferramentas ela passou da régua de 12 que este
-> sistema usa, e é a única desse tamanho rodando em Haiku. Se aparecer ferramenta
-> chamada à toa, é o primeiro lugar a olhar.
+**É o caso mais difícil do sistema**, e ganhou três linhas próprias em 26/08:
+13 ferramentas (uma acima da régua de 12) e o prompt mais longo dos seis. Naquele
+dia ela recebeu "te chamei no messenger sobre o apartamento pra locação",
+**não encaminhou** para VENDAS e ainda respondeu *"me passa a região que eu já te
+busco as opções"* — sem ter uma única ferramenta de busca.
+
+O prompt dela agora manda, no topo do roteiro: encaminhar **antes de escrever
+qualquer palavra**; nunca prometer busca (`VOCÊ NÃO TEM COMO BUSCAR IMÓVEL`); e
+lembrar que ser cliente da carteira não impede ninguém de querer outro imóvel.
+Ela também saiu do Haiku no mesmo dia — o prompt é a primeira camada, o modelo é
+a segunda.
 
 ---
 

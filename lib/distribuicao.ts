@@ -208,6 +208,19 @@ export async function reatribuirLead(leadId: number, novoCorretorId: number) {
     }
   });
 
+  // Passagem NOVA, com dono novo. `registrarPassagem` fecha a linha do vendedor
+  // anterior (`encerradoEm`) em vez de apagá-la: a prova de que ele não
+  // respondeu costuma ser o motivo da troca, e é dela que o painel do gestor
+  // precisa. Ver lib/passagem.ts.
+  const { registrarPassagem } = await import("@/lib/passagem");
+  await registrarPassagem({
+    leadId,
+    imobiliariaId: lead.imobiliariaId,
+    gatilho: "MANUAL",
+    corretorId: novoCorretorId,
+    agora,
+  });
+
   const { auditar } = await import("@/lib/auditoria");
   await auditar(
     "LEAD_REATRIBUIDO",
@@ -257,7 +270,18 @@ export async function distribuirAposQualificacao(leadId: number, imobiliariaId: 
 // EM_ATENDIMENTO, sem avisar ninguém. Aqui é o lead QUENTE, que pediu visita.
 // Duas funções com o mesmo nome e sentidos opostos é o tipo de coisa que a
 // próxima pessoa confunde às duas da manhã.
-export async function distribuirEAvisar(leadId: number, imobiliariaId: number) {
+//
+// (26/08, integração: a de lib/followup.ts foi renomeada para
+// `encerrarCadencia` no mesmo lote, pelo mesmo motivo, vindo do outro lado. Os
+// dois nomes ficam — o homônimo deixou de existir por completo.)
+export async function distribuirEAvisar(
+  leadId: number,
+  imobiliariaId: number,
+  // De onde veio a entrega. Só muda o rótulo do relógio do SLA — a entrega é a
+  // mesma. Default no caminho histórico para não obrigar os chamadores antigos
+  // a saber de um campo de métrica.
+  gatilho: "QUALIFICACAO" | "PEDIDO_VISITA" = "QUALIFICACAO"
+) {
   let corretorId: number | null = null;
   try {
     const imob = await prisma.imobiliaria.findUnique({
@@ -291,6 +315,50 @@ export async function distribuirEAvisar(leadId: number, imobiliariaId: number) {
     await avisarCorretorDoLead(leadId);
   } catch (e) {
     console.error("[distribuicao] aviso ao corretor falhou:", e);
+  }
+
+  // ─── O RELÓGIO DO SLA COMEÇA AQUI ─────────────────────────────────────────
+  //
+  // Este é o instante que o cliente descreveu em 26/08: "a hora que terminou a
+  // triagem, passou para o Gabriel assumir, salva o horário".
+  //
+  // FORA do try do rodízio, pelo MESMO motivo do aviso logo acima, e o motivo é
+  // o defeito que isto conserta: até 26/08 o carimbo morava dentro de
+  // `distribuirLead`, então a casa com rodízio desligado entregava o lead,
+  // avisava o corretor, e o relógio nunca começava. `Lead.atribuidoEm` era
+  // escrito em 2 de ~5 caminhos e lido por nenhum.
+  //
+  // Sem `corretorId` explícito: o rodízio devolver `null` NÃO quer dizer que o
+  // lead está sem dono — ele pode já ter um, e `distribuirLead` nem roda quando
+  // a casa distribui noutro momento. Quem resolve o dono é `registrarPassagem`,
+  // lendo o lead. Ver lib/passagem.ts.
+  const { registrarPassagem } = await import("@/lib/passagem");
+  await registrarPassagem({ leadId, imobiliariaId, gatilho });
+
+  // ─── A FRONTEIRA DA IA (reunião de 26/08) ─────────────────────────────────
+  //
+  // Júlia formulou e Samuel confirmou com "exato": enquanto o cliente não
+  // responde, a IA faz o follow-up; depois que ela qualifica e PASSA para o
+  // vendedor, a IA NÃO fala mais com o cliente — só lembra o corretor.
+  //
+  // Mora AQUI pelo mesmo motivo que o aviso mora aqui: esta é a função por onde
+  // passam os dois caminhos de entrega (ficha fechada e pedido de visita), e
+  // quem escrever o terceiro amanhã leva a fronteira junto sem precisar lembrar
+  // dela. Enfiada dentro de cada ferramenta de lib/agentes.ts, ela seria uma
+  // regra dita duas vezes e cumprida uma.
+  //
+  // FORA do try do rodízio, e depois do aviso: o corretor precisa ser avisado
+  // ANTES de a IA calar, senão existe um instante — curto, mas existe — em que
+  // ninguém está atendendo aquela pessoa.
+  //
+  // `.catch` como segunda tranca, igual ao aviso: a função já promete não jogar,
+  // mas a promessa é de outro arquivo e a consequência de quebrá-la é a resposta
+  // que o cliente está esperando no WhatsApp.
+  try {
+    const { pausarIaNaEntregaAoCorretor } = await import("@/lib/fronteira-ia");
+    await pausarIaNaEntregaAoCorretor(leadId, imobiliariaId);
+  } catch (e) {
+    console.error("[distribuicao] pausar a IA na entrega falhou:", e);
   }
 
   return corretorId;

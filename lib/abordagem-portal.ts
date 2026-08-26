@@ -199,7 +199,7 @@ export async function abordarLeadDePortal(
   const conversa = await prisma.conversa.findFirst({
     where: { imobiliariaId: lead.imobiliariaId, contatoTelefone: lead.telefone },
     orderBy: { atualizadaEm: "desc" },
-    select: { id: true, instanciaId: true, contatoJid: true },
+    select: { id: true, instanciaId: true, contatoJid: true, leadId: true },
   });
   const conv =
     conversa ??
@@ -211,9 +211,23 @@ export async function abordarLeadDePortal(
         contatoNome: lead.nome,
         contatoTelefone: lead.telefone,
         canal: lead.origem.toUpperCase(),
+        // A ponte Conversa → Lead. Este é o segundo dos dois lugares que a
+        // deixavam vazia (o outro é o webhook do portal). Sem ela, a conversa
+        // que chega ao roteador não sabe de qual lead é — e portanto não sabe
+        // qual brinco tem.
+        leadId: lead.id,
       },
-      select: { id: true, instanciaId: true, contatoJid: true },
+      select: { id: true, instanciaId: true, contatoJid: true, leadId: true },
     }));
+
+  // Conversa que já existia e ainda não apontava para lead nenhum. `leadId:
+  // null` no filtro é o que impede este lead de sequestrar a conversa de outro,
+  // e é o que torna a chamada repetível sem efeito colateral.
+  if (conversa && conversa.leadId == null) {
+    await prisma.conversa
+      .updateMany({ where: { id: conversa.id, leadId: null }, data: { leadId: lead.id } })
+      .catch(() => {});
+  }
 
   const destinos = conv.contatoJid ? [conv.contatoJid, lead.telefone] : [lead.telefone];
   const envio = await enviarWhatsApp(lead.telefone, texto, { instanciaId: conv.instanciaId }, destinos);

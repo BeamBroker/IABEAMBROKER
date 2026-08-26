@@ -25,6 +25,9 @@ O que a ferramenta faz:
   com a observação de horário se houver
 - roda o rodízio (escolhe o dono) e **chama o corretor de plantão** no WhatsApp
 - é idempotente: rechamar não manda dois avisos nem duplica a nota
+- **e cala a IA**: no mesmo instante, a conversa recebe `iaPausada`. Depois da
+  passagem a Maitê não fala mais com o cliente — só lembra o corretor. A última
+  mensagem dela é uma despedida curta, sem pergunta. Ver `docs/07`.
 
 **Dizer que a equipe vai marcar sem chamar a ferramenta é abandonar o cliente** —
 ninguém fica sabendo e ele espera uma ligação que não foi pedida a ninguém.

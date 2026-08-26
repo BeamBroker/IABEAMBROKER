@@ -131,9 +131,34 @@ describe("a IA só enxerga a carteira do tenant da linha de WhatsApp", () => {
     // "este bairro existe?" é montada a partir do mesmo objeto de filtro.
     const r = await rodar("buscar_imoveis_venda", { bairro: BAIRRO_B });
     expect(r).not.toContain(codigoB);
+
     // E o bairro do vizinho não pode nem ser SUGERIDO: a pergunta de
     // desistência lista os bairros parecidos que existem — só os da casa.
-    expect(r).not.toContain(BAIRRO_B);
+    //
+    // ─── POR QUE O ECO SAI DA CONTA (medido em 26/08, na integração) ────────
+    //
+    // A pergunta de desistência REPETE, entre aspas, o que o cliente pediu:
+    // «Não existe nenhum bairro parecido com "<pedido>" nesta carteira».
+    // Repetir a pergunta de quem perguntou não é vazar a carteira do vizinho —
+    // o texto veio do próprio `input` desta chamada, não do banco do tenant B.
+    //
+    // Sem tirar o eco, esta asserção dependia de `process.pid`: `MARCA` entra
+    // nos DOIS nomes, então o tamanho do pid muda a semelhança entre
+    // "…-bairro-do-vizinho" e "…-bairro-da-casa" e decide qual ramo de
+    // `resolverBairro` roda. Medido chamando os matchers direto:
+    //
+    //   pid  1..1234    melhorBairro → null   ⇒ cai na pergunta ⇒ havia eco ⇒ VERMELHO
+    //   pid  12345+     melhorBairro → casa   ⇒ nem chega na pergunta ⇒ VERDE
+    //
+    // Em macOS o pid recicla por números baixos, então o resultado era cara ou
+    // coroa a cada rodada — e reprova o portão 5 do deploy sem defeito nenhum.
+    // Confirmado que já era assim na `dev` (075decf), antes deste lote.
+    //
+    // O que continua preso, que é o ponto do teste: o nome do bairro do vizinho
+    // não aparece em NENHUM outro lugar da resposta — nem na lista de
+    // sugestões, nem em ficha de imóvel.
+    const semEco = r.replace(`"${BAIRRO_B}"`, '"<o que o cliente pediu>"');
+    expect(semEco).not.toContain(BAIRRO_B);
   });
 
   it("a exigência relaxada continua sem abrir a porta do vizinho", async () => {

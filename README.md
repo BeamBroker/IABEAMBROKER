@@ -9,8 +9,8 @@ e alterado sem abrir o sistema inteiro. É a área da chefe.
 ## O que tem aqui
 
 ```
-lib/        24 arquivos · o que a IA fala, quando fala e o que ela faz
-testes/     23 arquivos · as regras travadas em teste, com o caso real que as criou
+lib/        35 arquivos · o que a IA fala, quando fala e o que ela faz
+testes/     34 arquivos · as regras travadas em teste, com o caso real que as criou
 docs/       como tudo funciona, em português
 CLAUDE.md   as instruções do agente — leia se for usar Claude aqui
 scripts/    sincronização com o sistema
@@ -33,6 +33,17 @@ scripts/    sincronização com o sistema
 | `lib/ia-config.ts` | o nome da atendente, configurável por imobiliária |
 | `lib/analise-lead.ts` · `lib/crm-conversas.ts` | a IA lendo a conversa para alimentar o quadro |
 
+E o ciclo que fecha o atendimento, desenhado na reunião de 26/08:
+
+| Arquivo | O que decide |
+|---|---|
+| `lib/brinco.ts` · `lib/ctwa.ts` · `lib/origem-lead.ts` | a marca que o lead recebe na entrada — e sem ela nenhuma cadência o toca |
+| `lib/fronteira-ia.ts` | **onde a IA para de falar com o cliente**: na passagem para o vendedor |
+| `lib/passagem.ts` · `lib/entrega-ia.ts` | o instante em que o lead vira responsabilidade de gente |
+| `lib/cadencia-vendedor.ts` · `lib/cobranca-vendedor.ts` | a cobrança no WhatsApp do corretor: 15min, 4h, 24h |
+| `lib/atividades-cadencia.ts` | a cobrança por tarefa na agenda dele: 24h, 72h, 168h |
+| `lib/sla-vendedor.ts` · `lib/sla-fechamento.ts` | quanto tempo entre a passagem e a primeira resposta |
+
 ## O que NÃO tem aqui
 
 O sistema. Não há banco, telas, webhook do WhatsApp, autenticação, cobrança nem
@@ -52,6 +63,8 @@ para produção é o Pablo, com a suíte inteira e dez portões de deploy.
 5. `docs/05-decisoes-que-nao-se-desfazem.md` — **o mais importante**: as regras
    que custaram um cliente para existir
 6. `docs/06-como-mexer-e-devolver.md` — o ciclo de trabalho, do `pull` ao deploy
+7. `docs/07-a-fronteira-e-o-ciclo-do-lead.md` — a decisão da reunião de 26/08:
+   depois da passagem, a IA não fala mais com o cliente — só lembra o corretor
 
 ## Como uma mudança chega ao cliente
 

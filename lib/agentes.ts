@@ -18,6 +18,7 @@
 import type { AgenteIA, Conversa, Lead } from "@prisma/client";
 import { corretorPorTelefone, telefonesDosCorretores } from "@/lib/corretores";
 import { leadPorTelefone } from "@/lib/lead-telefone";
+import { brincoDaConversa } from "@/lib/brinco";
 import { prisma } from "@/lib/db";
 import { agentesAtivos } from "@/lib/planos";
 import type { Agente } from "@/lib/cmv";
@@ -36,8 +37,30 @@ export const MODELO = "claude-sonnet-5";
 // onde a qualidade vira receita, ficam no Sonnet.
 const MODELO_SONNET = process.env.IA_MODELO_SONNET || "claude-sonnet-5";
 const MODELO_HAIKU = process.env.IA_MODELO_HAIKU || "claude-haiku-4-5-20251001";
+// ── TODA A MAITÊ EM SONNET (26/08, decisão do dono) ───────────────────────
+//
+// A régua antiga era "classificação e consulta no Haiku; negociação no Sonnet",
+// e ela se sustentava enquanto as duas áreas baratas só faziam o trabalho
+// barato. Deixaram de fazer:
+//
+//   · a RECEPÇÃO decide para onde vai TODO primeiro contato da casa — 1.985
+//     turnos em 30 dias, o agente mais chamado do sistema. Errar ali não
+//     devolve uma resposta ruim: manda o cliente para a área errada, e quem
+//     conserta é a próxima mensagem dele, se houver próxima.
+//   · a ADMINISTRAÇÃO ganhou a saída de área e chegou a 13 ferramentas, uma
+//     acima da régua de 12 que este arquivo usa. Em 26/08 16:55, com a regra de
+//     troca ainda no topo do prompt, ela não encaminhou um pedido de locação e
+//     ainda prometeu buscar imóvel sem ter busca. O prompt foi corrigido no
+//     mesmo dia; o modelo é a segunda camada.
+//
+// O que custa, medido em produção nos mesmos 30 dias: US$ 4,63 → US$ 13,89.
+// Nove dólares por mês, contra uma conta de IA de US$ 23 no sistema inteiro.
+// Um lead perdido por encaminhamento errado custa mais que o ano.
+//
+// `MODELO_HAIKU` continua existindo e continua vindo de env: é o caminho de
+// voltar atrás sem deploy, se o custo mudar de escala com o volume.
 const MODELO_POR_AGENTE: Record<AgenteIA, string> = {
-  RECEPCAO: MODELO_HAIKU,
+  RECEPCAO: MODELO_SONNET,
   // O Ajuda Corretor SAIU do Haiku em 12/08, e a régua do comentário acima é
   // que manda: ele deixou de ser consulta. É o agente com MAIS ferramentas dos
   // seis (sete), e desde 10/08 ele ESCREVE no CRM — muda etapa de lead e grava
@@ -61,12 +84,9 @@ const MODELO_POR_AGENTE: Record<AgenteIA, string> = {
   // `resumo_da_carteira` abaixo), mas as duas têm em comum um modelo que não
   // sustenta sete ferramentas e um prompt longo.
   AJUDA_CORRETOR: MODELO_SONNET,
-  // EM OBSERVAÇÃO desde 26/08: com a saída de área ela passou a 13 ferramentas,
-  // uma acima da régua que este arquivo usa ("acima de ~12 o modelo erra mais a
-  // escolha", ver o teste do teto) — e é a única das treze que roda em Haiku. A
-  // troca para Sonnet é decisão de custo do dono, não de quem mexe no prompt: se
-  // aparecer ferramenta chamada à toa aqui, este é o primeiro lugar a olhar.
-  ADMINISTRACAO: MODELO_HAIKU,
+  // 13 ferramentas, uma acima da régua de 12 deste arquivo, e o prompt mais
+  // longo dos seis: é a área que menos podia estar no modelo mais fraco.
+  ADMINISTRACAO: MODELO_SONNET,
   VENDAS: MODELO_SONNET,
   CAPTACAO: MODELO_SONNET,
   COMPRA_VENDA: MODELO_SONNET,
@@ -1298,10 +1318,14 @@ function fichaDoImovel(i: {
               imobiliariaId: ctx.conversa.imobiliariaId,
               nome: input.nome,
               telefone,
-              origem: "WHATSAPP",
               status: "ATENDIMENTO",
               temperatura: input.temperatura ?? "MORNO",
               imovelId: imovel?.id,
+              // O brinco pelo caminho da IA. `origem: "WHATSAPP"` continua
+              // sendo gravado — o que muda é que agora ele passa pelo ponto
+              // único (lib/brinco.ts) e vem acompanhado do canal, do momento e
+              // de QUEM TROUXE.
+              ...(await brincoDaConversa(ctx.conversa)),
             },
           });
       await auditar("LEAD_REGISTRADO_IA", "Lead", lead.id, `via IA de vendas: ${lead.nome}`, ctx.conversa.imobiliariaId);
@@ -2961,12 +2985,12 @@ function fichaDoImovel(i: {
               imobiliariaId: ctx.conversa.imobiliariaId,
               nome: input.nome,
               telefone,
-              origem: "WHATSAPP",
               status: "ATENDIMENTO",
               finalidade: "COMPRA",
               temperatura: input.temperatura ?? "MORNO",
               imovelId: imovel?.id,
               empreendimentoId: empreendimento?.id,
+              ...(await brincoDaConversa(ctx.conversa)),
             },
           });
       await auditar("LEAD_COMPRA_REGISTRADO_IA", "Lead", lead.id, `comprador via IA: ${lead.nome}`, ctx.conversa.imobiliariaId);
@@ -4256,11 +4280,25 @@ function fichaDoImovel(i: {
       const { distribuirEAvisar } = await import("@/lib/distribuicao");
       const corretorId = await distribuirEAvisar(lead.id, ctx.conversa.imobiliariaId).catch(() => null);
 
+      // A ÚLTIMA LINHA MUDOU EM 26/08, e é a fronteira decidida na reunião.
+      //
+      // Ela dizia "depois disso siga a conversa normalmente, tirando dúvidas e
+      // completando o que faltar" — o oposto exato do que Júlia formulou e
+      // Samuel confirmou com "exato": depois que passa para o vendedor, a IA não
+      // fala mais com o cliente.
+      //
+      // O prompt sozinho não bastaria (modelo não é garantia): quem cala de
+      // verdade é `iaPausada`, gravado por lib/fronteira-ia.ts dentro de
+      // `entregarAoCorretor` logo acima. Esta frase existe para a ÚLTIMA
+      // mensagem — a que ainda vai sair desta chamada — ser uma despedida e não
+      // uma pergunta nova. Sem ela, a IA se despede oferecendo ajuda e o
+      // silêncio seguinte vira grosseria.
       return (
         `Entregue ao corretor${corretorId ? "" : " (o painel já mostra o lead como QUENTE)"}. ` +
         `Diga que um corretor entra em contato para combinar o dia e o horário da visita. ` +
         `NÃO invente data, NÃO invente horário, não diga que já está marcada e não prometa prazo. ` +
-        `Depois disso siga a conversa normalmente, tirando dúvidas e completando o que faltar.`
+        `Esta é a sua ÚLTIMA mensagem para esta pessoa: encerre com uma despedida curta, ` +
+        `NÃO faça pergunta nenhuma e NÃO ofereça continuar ajudando — daqui em diante quem fala é o corretor.`
       );
     },
   });
@@ -4490,6 +4528,22 @@ CONDOMÍNIO FECHADO — O NOME É A INFORMAÇÃO:
 // de propósito: o AJUDA_CORRETOR também herda o BASE e NÃO tem a ferramenta —
 // mandar trocar de área quem não pode trocar é ensinar a IA a prometer o que ela
 // não faz. A RECEPÇÃO tem regra própria, mais detalhada, no prompt dela.
+//
+// ── ELA VAI NO FIM DE CADA PROMPT, E ISSO É O CONSERTO DE 26/08 16:55 ──────
+//
+// Nasceu no topo, logo depois do PROMPT_BASE. Resultado, medido na conversa 335
+// do tenant 3:
+//
+//   cliente: "Oi tudo bem? Te chamei no messenger sobre o apartamento pra locação"
+//   Maitê:   "(...) Me passa a região e o que você procura (quartos, preço) que
+//             eu já te busco as opções."   ← na ADMINISTRACAO, que NÃO tem busca
+//
+// Ela não encaminhou para VENDAS e ainda prometeu uma ferramenta que não tem. O
+// motivo é a regra que este arquivo repete desde 10/08: entre duas instruções
+// opostas, o modelo segue a MAIS PRÓXIMA. No topo, "mudou o assunto, muda a
+// área" ficava a três mil palavras da decisão; "você atende quem já é da
+// carteira" ficava colado nela. No fim do prompt, é a última coisa que ele lê
+// antes de responder.
 const TROCA_DE_AREA = `
 
 MUDOU O ASSUNTO, MUDA A ÁREA (regra dura, vale mesmo com cliente já cadastrado):
@@ -4528,7 +4582,7 @@ NUNCA invente uma pergunta para "adiantar" o assunto: você não conhece o rotei
 Casos de borda (aí sim é humano de verdade): busca parceria ou tem reclamação grave: diga com educação que um atendente da equipe vai ajudar.
 NAO_CONTRATADO é SÓ para pedido cuja área não está na lista de opções da ferramenta. Se a área existe, é ela. NUNCA use NAO_CONTRATADO para comprar, empreendimento, Minha Casa Minha Vida ou financiamento quando COMPRA_VENDA estiver disponível.
 Se a área que resolveria o pedido NÃO estiver na lista de opções da ferramenta, chame direcionar_atendimento com NAO_CONTRATADO e faça exatamente o que a ferramenta responder — hoje ela manda NÃO ESCREVER NADA, porque a conversa já fica com a equipe naquele instante. Nunca mencione plano, módulo, sistema ou qualquer limitação: o cliente final da imobiliária não pode perceber que existe um limite comercial.`,
-  CAPTACAO: `${PROMPT_BASE}${TROCA_DE_AREA}
+  CAPTACAO: `${PROMPT_BASE}
 
 Agora o assunto é CAPTAÇÃO: colocar o imóvel do proprietário na nossa carteira.
 MOSTRE A CARTEIRA QUANDO ELE PERGUNTAR, e ofereça mesmo quando não perguntar: proprietário quer saber o que já temos na região e por quanto está saindo. Use buscar_imoveis_disponiveis e diga os valores reais. É o melhor argumento que você tem, e não custa nada — quem vê que a casa do vizinho está anunciada com você confia mais em deixar a dele. Primeiro descubra se ele quer ALUGAR ou VENDER o imóvel (pergunta direta se não estiver claro). Qualifique bem o imóvel e o proprietário antes de cadastrar, uma pergunta por vez, sem parecer formulário.
@@ -4552,7 +4606,7 @@ NUNCA ENCERRE UMA CAPTAÇÃO SEM CADASTRAR. O cadastro é o resultado do seu tra
 Depois de cadastrar, OFEREÇA uma avaliação/visita de um corretor ao imóvel (use agendar_avaliacao com o código e, se o cliente disser, a data).
 FOTOS (importante): peça fotos do imóvel pra já divulgar. Se o proprietário não tiver na hora, insista com jeito ("consegue me mandar umas fotos ainda hoje? ajuda demais a alugar rápido"). Se mesmo assim não tiver, diga que a equipe agenda uma visita pra tirar as fotos. Não deixe o imóvel sem foto.
 NÃO fale de exclusividade — não toque nesse assunto; se o proprietário perguntar, diga que a equipe explica as condições.
-Explique quando perguntarem: cuidamos de tudo (divulgação, cobrança, repasse, manutenção, contrato com assinatura digital) mediante taxa de administração sobre o aluguel.`,
+Explique quando perguntarem: cuidamos de tudo (divulgação, cobrança, repasse, manutenção, contrato com assinatura digital) mediante taxa de administração sobre o aluguel.${TROCA_DE_AREA}`,
   // ── A ORDEM AQUI FOI INVERTIDA, E É DE PROPÓSITO ─────────────────────────
   //
   // Este prompt abria mandando qualificar bem antes de mostrar imóvel, e só
@@ -4567,7 +4621,7 @@ Explique quando perguntarem: cuidamos de tudo (divulgação, cobrança, repasse,
   //
   // A explicação mora AQUI e não dentro da string: prompt não é changelog.
   // Citar a regra velha lá dentro, mesmo para negá-la, é mandar o modelo lê-la.
-  VENDAS: `${PROMPT_BASE}${TROCA_DE_AREA}
+  VENDAS: `${PROMPT_BASE}
 
 Agora o assunto é LOCAÇÃO (vendas): transformar o interessado em contrato assinado.
 
@@ -4619,10 +4673,13 @@ DEPOIS QUE A SIMULAÇÃO DO SEGURO FOR APROVADA, diga o VALOR ao cliente: quanto
 SEU TRABALHO TERMINA NA COLETA. Você mostra a carteira, tira dúvidas, registra o lead e roda a simulação do seguro. Você NÃO marca visita, NÃO remarca, NÃO cancela, NÃO registra proposta e NÃO fecha negócio — nada disso é ferramenta sua, e prometer qualquer um deles é mentir para o cliente.
 QUANDO ELE PEDIR PARA VISITAR, chame passar_para_corretor NA MESMA RESPOSTA — é o fim do seu trabalho e o começo do dele. Só depois diga, com naturalidade, que um corretor entra em contato para combinar o dia e o horário. Não invente dia, não invente horário, não diga "vou agendar" nem "já deixei marcado". Dizer que a equipe vai marcar SEM chamar a ferramenta é abandonar o cliente: ninguém fica sabendo, e ele espera para sempre uma ligação que não foi pedida a ninguém. Depois de entregar, continue coletando o que ainda falta: é exatamente isso que o corretor recebe na mão.
 Se o perfil não passar na qualificação, não descarte: ofereça alternativas e diga que a equipe avalia.
-GARANTIAS: explique as opções (seguro-fiança, fiador, caução). No seguro-fiança, deixe claro que custa um percentual do aluguel POR MÊS somado à mensalidade (a busca já mostra o valor total). Apresente o custo mensal completo antes de formalizar a proposta.`,
-  ADMINISTRACAO: `${PROMPT_BASE}${TROCA_DE_AREA}
+GARANTIAS: explique as opções (seguro-fiança, fiador, caução). No seguro-fiança, deixe claro que custa um percentual do aluguel POR MÊS somado à mensalidade (a busca já mostra o valor total). Apresente o custo mensal completo antes de formalizar a proposta.${TROCA_DE_AREA}`,
+  ADMINISTRACAO: `${PROMPT_BASE}
 
 Agora o assunto é ADMINISTRAÇÃO: você atende quem já é da carteira, com base nos dados reais do sistema (fornecidos abaixo). A mesma pessoa pode ser locatária de um imóvel E proprietária de outro — o contexto traz os dois lados; responda conforme o que ela perguntar. Nunca revele dados de outros clientes.
+PRIMEIRO DE TUDO, ANTES DE ESCREVER QUALQUER PALAVRA: se o que a pessoa quer é ALUGAR, COMPRAR ou ANUNCIAR um imóvel, isso NÃO é seu. Chame direcionar_atendimento (VENDAS para alugar, COMPRA_VENDA para comprar, CAPTACAO para anunciar) e não escreva nada — quem responde é a área certa, no mesmo instante, com as ferramentas dela.
+VOCÊ NÃO TEM COMO BUSCAR IMÓVEL. Não existe ferramenta de busca aqui, então é PROIBIDO dizer "me passa a região que eu já te busco", "vou ver as opções" ou qualquer promessa de mostrar imóvel: você não vai conseguir cumprir, e o cliente fica esperando uma lista que nunca chega. Quem busca é VENDAS e COMPRA_VENDA — encaminhe e pronto.
+Ser cliente da carteira não impede ninguém de querer outro imóvel. Proprietário e locatário também alugam e também compram, e é comum: trate como o melhor contato que existe, não como assunto fora do lugar.
 VOCÊ ATENDE OS DOIS LADOS, COM TONS DIFERENTES:
 - LOCATÁRIO (atendimento): 2ª via, cobrança, chamado de manutenção, dúvida de contrato. Tom de quem resolve.
 - PROPRIETÁRIO (prestação de contas): repasse (consultar_repasse), situação do imóvel (consultar_situacao_imovel), autorização de orçamento (aprovar_orcamento) e reajuste. Tom de quem presta contas: seja objetiva com números, diga o que já aconteceu e o que falta, e nunca prometa data que você não tem.
@@ -4631,7 +4688,7 @@ IDENTIDADE: as ferramentas do proprietário se baseiam no NÚMERO de quem está 
 - 2ª via / boleto / PIX: use enviar_segunda_via para pegar o PIX copia-e-cola e a linha digitável REAIS e envie ao inquilino (não invente código). Mantenha o código inteiro numa bolha só.
 - Problema no imóvel (vazamento, defeito etc.): abra o chamado com abrir_ocorrencia e confirme o número.
 - Atraso/dívida: use consultar_pendencias para ver o valor real (com multa e juros) e informe ao cliente com clareza. Você PODE propor um parcelamento e explicar as opções; mas a formalização do acordo (ou qualquer desconto) é feita por um atendente humano — avise que vai encaminhar para a equipe fechar.
-- Proprietário perguntando de repasse/aluguel: responda pelos dados do contexto (valores, datas, status do repasse).`,
+- Proprietário perguntando de repasse/aluguel: responda pelos dados do contexto (valores, datas, status do repasse).${TROCA_DE_AREA}`,
   AJUDA_CORRETOR: `${PROMPT_BASE}
 
 Agora você é a assistente interna dos CORRETORES da imobiliária (uso interno, não é cliente). O corretor te chama no WhatsApp pra consultar a carteira rápido.
@@ -4694,7 +4751,7 @@ O QUE FAZER:
 - Aqui você PODE mostrar dados internos (proprietário, situação do imóvel) porque é a equipe. Nunca cadastra nem cria proposta por aqui: é só consulta pra ajudar o corretor no atendimento dele.
 Seja a mão direita do corretor: rápida, precisa, organizada — e boa companhia.`,
   // Mesma inversão do VENDAS acima, pelo mesmo motivo — ver o comentário lá.
-  COMPRA_VENDA: `${PROMPT_BASE}${TROCA_DE_AREA}
+  COMPRA_VENDA: `${PROMPT_BASE}
 
 Agora o assunto é VENDA DE IMÓVEIS: você atende quem quer COMPRAR um dos imóveis que a imobiliária tem anunciados. A imobiliária só intermedeia a venda entre o dono e o comprador; ela NUNCA compra imóveis. Você NÃO capta imóvel pra vender (isso não é seu papel) nem gera contrato/escritura: você desperta interesse, qualifica e leva a oferta pra equipe fechar.
 FLUXO — MOSTRAR CEDO, QUALIFICAR EM CIMA DO INTERESSE:
@@ -4763,7 +4820,7 @@ OFERTAS:
 - Só formalize ofertas que fazem sentido. Se a oferta vier muito abaixo do pedido, converse antes: mostre o valor do imóvel e veja se a pessoa consegue chegar mais perto, sem ser grosseira. Oferta séria você repassa para a equipe fechar: registre o valor e as condições em observacoes na qualificação e avise o cliente que a equipe assume a negociação.
 - PERMUTA (troca): se o comprador oferece um bem como parte do pagamento, SEMPRE levante o valor estimado da troca e descreva o bem em observacoes, junto com quanto ele cobre do valor do imóvel. Deixe claro que a equipe avalia a troca.
 - Sempre diga que você leva a oferta ao proprietário e que pode haver contraproposta; a equipe conduz a negociação, o financiamento e a documentação.
-Se a pessoa quiser VENDER um imóvel dela (não comprar), aí sim é outro assunto: colha os dados básicos do imóvel e o preço pretendido e diga que a equipe segue com o cadastro e a avaliação. Isto vale SÓ para quem quer vender, nunca para quem quer comprar.`,
+Se a pessoa quiser VENDER um imóvel dela (não comprar), aí sim é outro assunto: colha os dados básicos do imóvel e o preço pretendido e diga que a equipe segue com o cadastro e a avaliação. Isto vale SÓ para quem quer vender, nunca para quem quer comprar.${TROCA_DE_AREA}`,
 };
 
 // ─── Motor: executa o agente da conversa ────────────────────────────────────

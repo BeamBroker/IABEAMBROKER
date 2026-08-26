@@ -414,7 +414,19 @@ async function enviarToque(lead: LeadToque, texto: string) {
 // Agora ele sai da IA e entra na mão do corretor: a cadência para (followUpEm
 // nulo, então nenhuma mensagem nova sai) e o status vai para EM_ATENDIMENTO, que
 // é a etapa de "corretor assumiu". Quem decide se está perdido passa a ser gente.
-async function entregarAoCorretor(
+//
+// ─── POR QUE ELA SE CHAMA `encerrarCadencia`, E NÃO `entregarAoCorretor` ────
+//
+// Porque existe uma em lib/distribuicao.ts que faz outra coisa: aquela roda o
+// rodízio, avisa o corretor de plantão e abre o relógio do SLA. Esta aqui só
+// desliga a cadência e muda o status. Duas funções com o mesmo nome e
+// semânticas diferentes é o que faz a próxima pessoa importar a errada — e, no
+// caso, achar que o aviso ao corretor sai daqui, que não sai.
+//
+// (26/08, integração: a de lá foi renomeada para `distribuirEAvisar` no mesmo
+// lote, vindo do outro lado. As duas frentes atacaram o mesmo homônimo por
+// pontas opostas, e os dois nomes ficam.)
+async function encerrarCadencia(
   leadId: number,
   nome: string,
   toques: number,
@@ -424,6 +436,15 @@ async function entregarAoCorretor(
     where: { id: leadId },
     data: { status: "EM_ATENDIMENTO", followUpEm: null },
   });
+  // O RELÓGIO DO SLA COMEÇA TAMBÉM AQUI.
+  //
+  // Este é o terceiro dos cinco caminhos de entrega, e até 26/08 era o mais
+  // invisível dos três que não carimbavam nada: a IA desistia, o lead virava
+  // EM_ATENDIMENTO, e ninguém nunca soube em que instante ele passou a ser
+  // responsabilidade de gente. Sem `corretorId` explícito — quem resolve o dono
+  // é `registrarPassagem`, lendo o lead. Ver lib/passagem.ts.
+  const { registrarPassagem } = await import("@/lib/passagem");
+  await registrarPassagem({ leadId, imobiliariaId, gatilho: "FIM_CADENCIA_IA" });
   await auditar(
     "LEAD_ENTREGUE_AO_CORRETOR",
     "Lead",
@@ -616,7 +637,20 @@ export async function processarFollowUps(): Promise<number> {
       if (etapaFalta > TOTAL_TOQUES) {
         await prisma.lead.update({
           where: { id: lead.id },
-          data: { status: "PERDIDO", followUpEm: null },
+          data: {
+            status: "PERDIDO",
+            followUpEm: null,
+            // O MOTIVO, e não em branco (26/08). Este caminho marca PERDIDO
+            // SOZINHO, sem ninguém decidir nada. Enquanto a coluna não existia,
+            // ele alimentava o gráfico de motivos de perda com "não informado" —
+            // e o painel do dono acusava "o maior motivo de perda é não
+            // informado: isso é falha de processo". O sistema criava o problema
+            // que depois denunciava.
+            //
+            // "Sumiu" é o motivo certo e está em `MOTIVOS_PERDA`: a pessoa
+            // marcou visita, faltou, e não respondeu a três toques.
+            motivoPerda: "Sumiu",
+          },
         });
         await auditar(
           "LEAD_PERDIDO_SEM_RESPOSTA",
@@ -636,7 +670,9 @@ export async function processarFollowUps(): Promise<number> {
         data: {
           followUpEtapa: etapaFalta,
           ...(ultimo
-            ? { status: "PERDIDO" as const, followUpEm: null }
+            // Mesmo motivo do bloco acima: PERDIDO automático grava "Sumiu" em
+            // vez de deixar o gráfico do dono dizer "não informado lidera".
+            ? { status: "PERDIDO" as const, followUpEm: null, motivoPerda: "Sumiu" }
             : { followUpEm: agendarToque(agora, CADENCIA_HORAS[etapaFalta]!) }),
         },
       });
@@ -667,7 +703,7 @@ export async function processarFollowUps(): Promise<number> {
     // Também é por aqui que sai quem teve a cadência ENCURTADA depois de já ter
     // avançado: estava na etapa 4, a nova tem 3, encerra agora.
     if (etapa > total) {
-      await entregarAoCorretor(lead.id, lead.nome, total, lead.imobiliariaId);
+      await encerrarCadencia(lead.id, lead.nome, total, lead.imobiliariaId);
       continue;
     }
     const texto = mensagemToque(lead, etapa);
@@ -686,7 +722,7 @@ export async function processarFollowUps(): Promise<number> {
       // oscilação de rede, restrição passageira): são ~6h de janela comercial.
       // Passou disso, o problema não é o momento — é o número.
       //
-      // Esgotar NÃO é descartar o lead: `entregarAoCorretor` é o mesmo caminho
+      // Esgotar NÃO é descartar o lead: `encerrarCadencia` é o mesmo caminho
       // do fim normal da cadência, e uma pessoa decide o que fazer com alguém
       // que a automação não alcança.
       const falhas = lead.followUpFalhas + 1;
@@ -702,7 +738,7 @@ export async function processarFollowUps(): Promise<number> {
           `cadência encerrada: toque ${etapa}/${total} falhou ${falhas}x seguidas para ${lead.nome} (${envio?.detalhe ?? "sem detalhe"})`,
           lead.imobiliariaId
         );
-        await entregarAoCorretor(lead.id, lead.nome, total, lead.imobiliariaId);
+        await encerrarCadencia(lead.id, lead.nome, total, lead.imobiliariaId);
         continue;
       }
       await prisma.lead.update({
@@ -724,7 +760,7 @@ export async function processarFollowUps(): Promise<number> {
         `toque ${etapa}/${total} (último) para ${lead.nome}`,
         lead.imobiliariaId
       );
-      await entregarAoCorretor(lead.id, lead.nome, total, lead.imobiliariaId);
+      await encerrarCadencia(lead.id, lead.nome, total, lead.imobiliariaId);
     } else {
       await prisma.lead.update({
         where: { id: lead.id },

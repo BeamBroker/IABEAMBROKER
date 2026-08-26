@@ -20,6 +20,7 @@ import { prisma } from "@/lib/db";
 import { criarNegocio, indiceDeEntrega, moverFase, FUNIL_PADRAO } from "@/lib/negocios";
 import { entregarNegocio } from "@/lib/entrega-ia";
 import { registrarUso } from "@/lib/uso-ia";
+import { sufixoTelefone } from "@/lib/match";
 
 export type TemperaturaExtraida = "FRIO" | "MORNO" | "QUENTE";
 
@@ -243,6 +244,39 @@ export async function sincronizarCrmDaConversa(conversaId: number): Promise<Resu
   });
 
   if (!existente) {
+    // ── O BRINCO DO LADO DA VENDA (26/08) ──────────────────────────────────
+    //
+    // Até aqui o card nascia SEM ORIGEM e sem chave nenhuma para o `Lead`, e a
+    // tela dizia isso ao cliente: "Os negócios do quadro de venda ainda não
+    // guardam origem, então não entram aqui" (/metricas-marketing).
+    //
+    // O lead existe: é a mesma pessoa, o mesmo telefone, e é ele que carrega de
+    // onde ela veio (`origem`, `portalAnuncio`, as seis colunas `meta*`). O que
+    // faltava era a ponte — e a ponte é o TELEFONE, porque `Conversa` e `Lead`
+    // não têm chave entre si (o mesmo motivo pelo qual lib/match.ts existe).
+    //
+    // Casa por SUFIXO e não por igualdade: telefone digitado à mão nunca bate
+    // caractere a caractere com o que o WhatsApp entrega — "(17) 98113-4070" e
+    // "5517981134070" são a mesma pessoa. Os últimos 8 dígitos são a régua do
+    // sistema inteiro (lib/match.ts, lib/atividades-automaticas.ts,
+    // lib/follow-detectado.ts).
+    //
+    // O MAIS RECENTE quando há mais de um: leads duplicados do mesmo número
+    // existem, e o mais novo é o que descreve por que a pessoa está falando
+    // agora. Sem lead nenhum, o negócio nasce sem origem — que é a verdade, e
+    // melhor que um palpite com cara de medida.
+    const sufixo = sufixoTelefone(conversa.contatoTelefone);
+    const lead = sufixo
+      ? await prisma.lead.findFirst({
+          where: {
+            imobiliariaId: conversa.imobiliariaId,
+            telefone: { endsWith: sufixo },
+          },
+          orderBy: { criadoEm: "desc" },
+          select: { id: true, origem: true },
+        })
+      : null;
+
     const novo = await criarNegocio({
       imobiliariaId: conversa.imobiliariaId,
       funilId: funil.id,
@@ -251,6 +285,12 @@ export async function sincronizarCrmDaConversa(conversaId: number): Promise<Resu
       valor: leitura.valor,
       contatoNome: leitura.nome ?? conversa.contatoNome,
       contatoTelefone: conversa.contatoTelefone,
+      leadId: lead?.id ?? null,
+      // A origem é COPIADA além de ligada. Parece redundante com a FK e não é:
+      // `onDelete: SetNull` no lead significa que apagar o lead apagaria a
+      // origem da VENDA junto, e o relatório de marketing do trimestre passado
+      // mudaria porque alguém limpou um cadastro.
+      origem: lead?.origem ?? null,
     });
     // Um QUENTE nasce direto na fase de entrega — então a entrega é tentada já
     // na criação, não só no movimento. Sem isto o card mais valioso seria
