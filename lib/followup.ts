@@ -285,6 +285,15 @@ export function mensagemToque(lead: LeadToque, etapa: number): string {
   // sem afirmar nada sobre ele, que é o que sobra quando a disponibilidade não
   // foi conferida.
   const refLembrei = citado ? `d${demonstrativo(g, "aquele")} ${citado}` : null;
+  // A MESMA retomada depois de um verbo que rege EM, e não DE: "fiquei pensando
+  // NAQUELA casa". Trocar as duas produz "pensando daquela casa", que é erro de
+  // regência, não de estilo.
+  const emRefLembrei = citado ? `n${demonstrativo(g, "aquele")} ${citado}` : null;
+  // "da casa", "do apartamento": o artigo contraído com a preposição DE, para
+  // quando a citação entra depois dela. Sem isto sai "do seguro DE A CASA" —
+  // o mesmo defeito de concordância que fez "o casa de condomínio" chegar a um
+  // cliente em 21/08 e que lib/referencia-imovel.ts existe para não repetir.
+  const deRefImovel = citado ? `d${artigo(g)} ${citado}` : null;
 
   // ── DISPONIBILIDADE SE CONFERE, NÃO SE SUPÕE ────────────────────────────
   //
@@ -315,7 +324,7 @@ export function mensagemToque(lead: LeadToque, etapa: number): string {
   // Escolheu o imóvel e parou na hora dos dados. É AQUI que mais gente cai.
   if (refImovel && !sim && !compra) {
     if (etapa === 1)
-      return `${nome}, ficou faltando só os seus dados pra eu fazer a consulta do seguro de ${refImovel}. É rapidinho, preciso do nome completo, CPF, data de nascimento, telefone e e-mail.`;
+      return `${nome}, ficou faltando só os seus dados pra eu fazer a consulta do seguro ${deRefImovel}. É rapidinho, preciso do nome completo, CPF, data de nascimento, telefone e e-mail.`;
     if (etapa === 2)
       return disponivel
         ? `${nome}, ${refImovel} continua disponível. Se ficou alguma dúvida sobre o seguro ou sobre os dados que pedi, me pergunta. Prefiro resolver isso do que te deixar sem resposta.`
@@ -341,7 +350,7 @@ export function mensagemToque(lead: LeadToque, etapa: number): string {
     return refImovel
       ? disponivel
         ? `${nome}, ${refImovel} segue disponível. O que você achou d${g === "f" ? "ela" : "ele"}?`
-        : `${nome}, fiquei pensando ${refLembrei} que te mandei. O que você achou d${g === "f" ? "ela" : "ele"}?`
+        : `${nome}, fiquei pensando ${emRefLembrei} que te mandei. O que você achou d${g === "f" ? "ela" : "ele"}?`
       : `${nome}, consegui separar umas opções pra você ${acao}. Me diz o bairro e a faixa de valor que já te mando.`;
   if (etapa === 2)
     return refImovel

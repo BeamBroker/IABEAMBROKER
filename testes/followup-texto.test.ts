@@ -174,3 +174,52 @@ describe("a Maitê não se reapresenta no follow-up", () => {
     });
   }
 });
+
+// ── REGÊNCIA E CONTRAÇÃO ──────────────────────────────────────────────────
+//
+// A mesma família de defeito que fez "o casa de condomínio" chegar a um cliente
+// em 21/08, e que lib/referencia-imovel.ts existe para não repetir. A citação do
+// imóvel já vem com artigo ("a casa no condomínio Gaivota I"), então emendar uma
+// preposição na frente sem contrair produz "de a casa" e "pensando daquela".
+describe("a preposição contrai com o artigo", () => {
+  it("é 'do seguro da casa', nunca 'do seguro de a casa'", () => {
+    const t = mensagemToque(leadReal({ finalidade: "LOCACAO" }), 1);
+    expect(t).toContain("do seguro da casa no condomínio Gaivota I");
+    expect(t).not.toContain("de a casa");
+    expect(t).not.toContain("seguro de a");
+  });
+
+  it("no masculino vira 'do'", () => {
+    const t = mensagemToque(
+      leadReal({
+        finalidade: "LOCACAO",
+        imovel: { tipo: "Apartamento", bairro: "Centro", valorSugerido: 1800, condominio: null },
+      }),
+      1
+    );
+    expect(t).toContain("do seguro do apartamento no Centro");
+    expect(t).not.toContain("de o apartamento");
+  });
+
+  it("quem rege EM não vira DE: 'pensando naquela', nunca 'pensando daquela'", () => {
+    // O caminho desta frase é estreito: locação, com imóvel citável, com uma
+    // simulação que NÃO está pendente (a pendente devolve antes) e sem o status
+    // do imóvel conferido. Sem essa combinação o teste passaria por vacuidade,
+    // afirmando sobre uma mensagem que nunca conteria a frase de qualquer jeito.
+    const t = mensagemToque(
+      leadReal({ finalidade: "LOCACAO", simulacoes: [{ status: "APROVADO" }] }),
+      1
+    );
+    expect(t).toContain("fiquei pensando naquela casa no condomínio Gaivota I");
+    expect(t).not.toContain("pensando daquela");
+  });
+
+  it("a etapa 1 sem status conferido usa 'naquela' depois de 'fiquei pensando'", () => {
+    // O caminho que chega nesta frase é o de quem viu opções e não escolheu
+    // nenhuma: sem imóvel escolhido para locação e sem simulação.
+    const t = mensagemToque(leadReal({ finalidade: "COMPRA" }), 1);
+    // Este é o de compra, que usa "lembrei daquela" — a regência de LEMBRAR é DE.
+    expect(t).toContain("lembrei daquela casa");
+    expect(t).not.toContain("lembrei naquela");
+  });
+});
