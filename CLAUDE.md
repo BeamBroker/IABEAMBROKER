@@ -12,7 +12,7 @@ que parecem estranhas aqui foram escritas depois de custarem um cliente.
 
 **É** a cópia dos arquivos que decidem o que a IA fala, quando fala, para quem
 encaminha, como persegue um lead que sumiu e em que ponto ela **cala** e devolve
-a conversa a uma pessoa. São 35 arquivos de comportamento e 34 arquivos de
+a conversa a uma pessoa. São 38 arquivos de comportamento e 38 arquivos de
 teste, tirados do sistema `administrativo`, que é o CRM completo da Beam Broker.
 
 **Não é** o sistema. Aqui não há banco, não há telas, não há o webhook que
@@ -81,6 +81,9 @@ seguida de silêncio. Leia `docs/07` antes de encostar nesse trecho.
 | quando o corretor recebe o lead | `lib/distribuicao.ts` + o gatilho em `lib/agentes.ts` |
 | o texto do aviso que chega ao corretor | `lib/aviso-lead.ts` |
 | o nome da atendente | `lib/ia-config.ts` (mas o nome real vem do banco, por imobiliária) |
+| o orçamento da locação: o que entra no pacote e quanto pode passar do teto | `lib/pacote-locacao.ts` (a busca de locação filtra por ele, não pelo aluguel) |
+| o **tom** da atendente naquela casa | `lib/tom-da-imobiliaria.ts` (lê o mesmo `iasConfig` do nome; o padrão não acrescenta nada) |
+| as frases que denunciam o sistema ao cliente | `lib/agentes.ts` → bloco `NÃO NARRE O SISTEMA` no fim do `PROMPT_BASE`, e a régua em `lib/fala-de-sistema.ts` |
 | o modelo de cada área | `lib/agentes.ts` → `MODELO_POR_AGENTE` (hoje: **todas em Sonnet 5**) |
 | como ela escreve quando a resposta virar áudio | `lib/prompt-audio.ts` |
 

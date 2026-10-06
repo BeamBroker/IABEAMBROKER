@@ -19,6 +19,7 @@ import type { AgenteIA, Conversa, Lead } from "@prisma/client";
 import { corretorPorTelefone, telefonesDosCorretores } from "@/lib/corretores";
 import { leadPorTelefone } from "@/lib/lead-telefone";
 import { brincoDaConversa } from "@/lib/brinco";
+import { descreverPacote, encaixe, MARGEM_ACIMA, pacoteMensal, tetoComMargem } from "@/lib/pacote-locacao";
 import { prisma } from "@/lib/db";
 import { agentesAtivos } from "@/lib/planos";
 import type { Agente } from "@/lib/cmv";
@@ -683,7 +684,22 @@ function fichaDoImovel(i: {
         status: "DISPONIVEL" as const,
         finalidade: { in: ["LOCACAO", "AMBOS"] },
         ...(input.tipo ? { tipo: { contains: input.tipo, mode: "insensitive" as const } } : {}),
-        ...(input.valorMaximo ? { valorSugerido: { lte: input.valorMaximo } } : {}),
+        // ── O TETO É DO PACOTE, E O BANCO SÓ SABE PENEIRAR O ALUGUEL ─────
+        //
+        // "Procuro até 1.700" na locação é o que sai da conta da pessoa todo
+        // mês: aluguel mais condomínio mais IPTU. Este filtro comparava o teto
+        // com `valorSugerido`, que é só o aluguel, e devolvia um apartamento de
+        // 1.500 com 400 de condomínio e 100 de IPTU como se coubesse.
+        //
+        // Somar três colunas dentro do `where` não é uma linha de Prisma, e não
+        // precisa ser: o pacote é sempre MAIOR OU IGUAL ao aluguel, então
+        // peneirar pelo aluguel no banco não descarta nenhum candidato válido.
+        // Quem decide é o cálculo do pacote, em JS, mais abaixo. O teto do SQL
+        // já vai com a margem, senão a opção pouco acima do teto é cortada
+        // antes de existir.
+        ...(input.valorMaximo
+          ? { valorSugerido: { lte: tetoComMargem(input.valorMaximo) } }
+          : {}),
       };
 
       // O bairro pedido é resolvido contra os bairros que EXISTEM na carteira
@@ -711,13 +727,16 @@ function fichaDoImovel(i: {
       const exatos = await prisma.imovel.findMany({
         where: { ...base, ...filtroLugar },
         include: { _count: { select: { fotos: true } }, condominio: { select: { nome: true, bairro: true } } },
-        take: 6,
+        // 12, e não 6: o pacote ainda vai peneirar esta lista em JS, e um
+        // `take` apertado aqui faz a peneira devolver duas opções onde existem
+        // seis.
+        take: 12,
       });
       // 2) proximidade: se pediu bairro e sobrou espaço, ofereça imóveis PERTO
       //    (até ~2 km do bairro) que não são do bairro exato.
       const proximidade = new Map<number, number>();
       let lista = exatos;
-      if (bairroBusca && exatos.length < 6) {
+      if (bairroBusca && exatos.length < 12) {
         const candidatos = await prisma.imovel.findMany({
           where: {
             ...base,
@@ -733,7 +752,7 @@ function fichaDoImovel(i: {
         const perto = candidatos
           .filter((c) => (dist.get(c) ?? Infinity) <= RAIO_PROXIMIDADE_KM)
           .sort((a, b) => (dist.get(a) ?? 9) - (dist.get(b) ?? 9))
-          .slice(0, 6 - exatos.length);
+          .slice(0, Math.max(0, 12 - exatos.length));
         perto.forEach((p) => proximidade.set(p.id, dist.get(p) ?? 0));
         lista = [...exatos, ...perto];
       }
@@ -746,19 +765,76 @@ function fichaDoImovel(i: {
           ? await oQueTemNoBairro(base, bairroBusca, { tipo: input.tipo }, "para alugar")
           : "";
 
-      if (lista.length === 0) {
-        if (avisoDoBairro) return `Nenhum ${input.tipo} para alugar em ${bairroBusca}.${avisoDoBairro}`;
-        return "Nenhum imóvel disponível com esses critérios.";
+      // ── O PACOTE DECIDE O QUE CABE, NÃO O ALUGUEL ───────────────────────
+      //
+      // O SQL peneirou pelo aluguel, que é o piso do pacote. Aqui a conta fecha
+      // com condomínio e IPTU, e o que estourou o teto mais a margem cai fora
+      // ANTES de o modelo ver — opção que não cabe não é opção, e deixá-la na
+      // lista é convidar a IA a apresentar como possível o que a pessoa já
+      // disse que não pode pagar.
+      const comPacote = lista.map((i) => {
+        const p = pacoteMensal(i);
+        return { i, p, enc: encaixe(p, input.valorMaximo) };
+      });
+      const cabem = comPacote.filter((x) => x.enc !== "fora");
+      // Dentro do teto primeiro: a regra é priorizar o que cabe e só então
+      // mostrar o que passou um pouco.
+      const ordenados = [
+        ...cabem.filter((x) => x.enc === "dentro"),
+        ...cabem.filter((x) => x.enc === "pouco_acima"),
+      ];
+
+      if (ordenados.length === 0) {
+        // ── BUSCA VAZIA NÃO É NOTÍCIA PARA O CLIENTE, É ORDEM PARA VOCÊ ────
+        //
+        // Este texto é INSTRUÇÃO, e não informação: dizer "nenhum imóvel
+        // disponível com esses critérios" fazia o modelo repassar a frase, e o
+        // cliente lia o resultado de uma consulta em vez de uma corretora
+        // tentando resolver. O texto da ferramenta é a instrução mais PRÓXIMA
+        // da decisão — mais perto que o prompt —, então é aqui que a saída tem
+        // de estar escrita.
+        //
+        // A escada NÃO termina em parceiros. `buscar_em_parceiros` existe, mas
+        // só na lista do AJUDA_CORRETOR: prometer ao cliente que a Maitê vai
+        // falar com corretores parceiros é prometer uma ação que ninguém
+        // executa, que é o erro de 04/08 com outra roupa.
+        const oQueZerou = input.valorMaximo
+          ? `O teto de ${brl(input.valorMaximo)} é do PACOTE (aluguel + condomínio + IPTU), e já foi testado com ${Math.round(MARGEM_ACIMA * 100)}% de folga. `
+          : "";
+        return (
+          `BUSCA SEM RESULTADO. NÃO diga ao cliente que não achou, que não tem, que não encontrou nem que a busca voltou vazia. ${oQueZerou}` +
+          `Faça isto, nesta ordem, e pare no primeiro que resolver:\n` +
+          `1. Busque de novo SEM o filtro menos importante do que ela pediu (o tipo costuma ser o primeiro a soltar).\n` +
+          `2. Se ela deu bairro, busque na região em volta.\n` +
+          `3. Se nada apareceu, PERGUNTE a ela uma flexibilização, uma só e a mais provável: "você está procurando só apartamento ou pode ser casa também?", ` +
+          `"você quer ficar só nessa região ou pode ser algum bairro próximo?", "esse valor é o seu limite mesmo ou se aparecer algo bem perto você considera?".\n` +
+          `4. NUNCA mude o critério por conta própria: pergunte e espere a resposta. Depois dela, busque de novo.\n` +
+          `5. Se ainda assim não houver nada, seja franca: diga que o que você tem hoje não faz o perfil dela, registre o perfil com registrar_lead e ofereça que um corretor procure. ` +
+          `NÃO prometa falar com corretores parceiros: esse caminho não existe hoje, e prometer o que ninguém executa deixa o cliente esperando para sempre.` +
+          avisoDoBairro
+        );
       }
+
       const sfPct = Number(imob?.seguroFiancaPercent ?? 11);
-      return lista
-        .map((i) => {
-          const sf = Number(i.valorSugerido ?? 0) * (sfPct / 100);
+      const acima = ordenados.filter((x) => x.enc === "pouco_acima").length;
+      const cabecalho =
+        `${ordenados.length} opção(ões). FAÇA CURADORIA: mostre no máximo 3, as que mais combinam com o que ela pediu, ` +
+        `e não a lista inteira.` +
+        (acima
+          ? ` ${acima} está(ão) marcada(s) como ACIMA DO TETO: pode mostrar, mas AVISE que passou um pouco, sempre.`
+          : "") +
+        `\n`;
+
+      return cabecalho + ordenados
+        .map(({ i, p, enc }) => {
+          const sf = p.aluguel * (sfPct / 100);
           const perto = proximidade.get(i.id);
           return (
-            `${i.codigo}: ${i.tipo} em ${i.endereco}${lugarDoImovel(i)}${fichaDoImovel(i)} — ${brl(i.valorSugerido)}/mês` +
-            (i.valorCondominio ? ` + cond. ${brl(i.valorCondominio)}` : "") +
-            ` | com garantia seguro-fiança (+${sfPct}%): ${brl(Number(i.valorSugerido ?? 0) + sf)}/mês de aluguel` +
+            `${i.codigo}: ${i.tipo} em ${i.endereco}${lugarDoImovel(i)}${fichaDoImovel(i)} — ${descreverPacote(p, brl)}` +
+            (enc === "pouco_acima" && input.valorMaximo
+              ? ` | ACIMA DO TETO de ${brl(input.valorMaximo)}: avise o cliente que passou um pouco antes de ele perguntar`
+              : "") +
+            ` | com o seguro-fiança (referência desta casa, ${sfPct}% do aluguel; o valor exato só sai na simulação): ${brl(p.total + sf)}/mês` +
             (perto !== undefined ? ` | fica a ${perto.toFixed(1)} km de ${input.bairro}` : "") +
             (i._count.fotos > 0 ? ` | ${i._count.fotos} foto(s) — use enviar_fotos_imovel para mandar` : " | (sem fotos cadastradas)")
           );
@@ -4434,6 +4510,7 @@ JEITO DE FALAR (vale para tudo):
 - OBJETIVA acima de tudo: vá direto ao ponto, com o mínimo de palavras. Sem enrolação, sem repetir o que o cliente disse, sem frases de preenchimento ("que ótimo!", "perfeito!", "fico feliz em ajudar"). Corte tudo que não for necessário.
 - NÃO use emoji. Nenhum, nunca.
 - NÃO use travessão nem hífen longo (— ou –) em NENHUMA mensagem. Se precisar separar ideias, use ponto final e outra frase, ou vírgula. Nada de "certo — vamos lá": escreva "certo, vamos lá" ou duas frases.
+- NÃO use DOIS-PONTOS para emendar pergunta nem para anunciar o que vem ("me conta uma coisa: você pretende financiar?", "preciso entender algumas coisas: região, valor e quartos", "nesse caso: quer visitar?"). É a pontuação que mais denuncia texto gerado, porque ninguém digita assim no WhatsApp. Escreva duas frases, ou emende com vírgula: "Perfeito! Você pretende financiar?", "Só pra eu entender melhor, qual região você está buscando?". Dois-pontos só antes de uma informação que vale sozinha, tipo um valor, um endereço ou um código.
 - Informal e leve, como você falaria de verdade no WhatsApp com um conhecido. Pode usar "pra", "tá", "tô", "né", "dá pra", contrações. Nada de tom formal, corporativo ou robótico, e nada de vendedor animado.
 - É SEMPRE "você". NUNCA escreva "cê", "ocê" nem "vc". "Cê" no texto lido parece desleixo, não intimidade, e quem está decidindo onde vai morar repara. Escrever "você" por extenso não deixa a conversa formal: o que deixa formal é "prezado", "informamos", "solicitamos".
 - ACENTO NÃO É OPCIONAL, e "não" é a palavra que mais aparece na sua boca. Escreva "não", "é", "só", "você", "está" com acento, SEMPRE. Já saiu "No achei" no lugar de "Não achei" para um cliente decidindo a compra da vida dele, e a primeira palavra da frase é justamente a que ele lê primeiro. Informalidade é o TOM, nunca a ortografia. Releia a frase INTEIRA antes de mandar, não só o começo.
@@ -4462,7 +4539,10 @@ JEITO DE FALAR (vale para tudo):
 - O CÓDIGO DO IMÓVEL É NOSSO, não dele. Nunca escreva "código 1650" nem "o 1650" para o cliente: ele quer a casa, não a etiqueta da gaveta. Refira-se pelo que a pessoa reconhece: "a casa da Bady Bassitt", "o apartamento do Centro". O código só aparece quando VOCÊ chama uma ferramenta.
 - BAIRRO PEDE ARTIGO. Diga "no Boa Vista", "no Centro", "na Vila Xavier", "no Jardim América" — nunca "em Boa Vista", que soa cidade, não bairro. Cidade sim leva "em": "em Araraquara".
 - UMA pergunta por vez, no fim da bolha. Se você tem duas dúvidas, faça a mais importante e guarde a outra para a próxima mensagem.
-- Apresente-se como Maitê só na PRIMEIRA mensagem, e de forma curta ("Oi, aqui é a Maitê.").
+- Apresente-se como Maitê só na PRIMEIRA mensagem desta conversa, e de forma curta ("Oi, aqui é a Maitê."). SE JÁ EXISTE HISTÓRICO com esta pessoa, você NÃO se apresenta de novo: nem depois de horas, nem no dia seguinte, nem quando é VOCÊ quem volta a falar. Retomar é continuar de onde parou, citando o que ela viu ("lembrei daquela casa no Damha IV que você viu"). Reapresentar-se para quem falou com você de manhã é anunciar que ninguém guardou nada.
+- O NOME DELA, DE VEZ EM QUANDO. Quando você sabe o primeiro nome, use nos momentos em que ele carrega alguma coisa: o primeiro contato, a hora de entregar o que ela pediu, a retomada depois de um tempo. NUNCA em toda mensagem, e NUNCA colado num "entendi", "perfeito", "certo" ou numa pergunta seca. "Samuel, entendi" e "Samuel, você pretende financiar?" são o tique que mais entrega robô, porque gente nenhuma repete o nome de quem está do outro lado a cada linha. Se você não tem certeza de que o nome está certo, não use: chamar a pessoa pelo nome errado é pior do que não chamar.
+- VARIE A FORMA. Não abra duas mensagens seguidas do mesmo jeito e não repita a mesma estrutura turno após turno. Gente varia sozinha: às vezes três palavras ("Tenho sim, vou te mandar"), às vezes duas frases, às vezes só a pergunta ("Essa você gostou?"). Isso não é licença para textão nem para enrolação, é o contrário: é não ter um molde reconhecível.
+- NUNCA mande LISTA DE PEDIDO. Enumerar o que você precisa ("me informa: região, quartos, valor, garagem") é o mesmo formulário com outra roupa, e é a coisa mais parecida com chatbot que existe. Uma pergunta, em frase. As únicas listas que você manda são a de imóveis e a de documentos que a ferramenta devolveu.
 - Mantenha códigos/links (PIX copia-e-cola, linha digitável, URL) SEMPRE inteiros, no mesmo parágrafo, sem quebrar no meio.
 - ÁUDIO (nota de voz): parte das suas respostas pode virar áudio automaticamente (o sistema decide). Escreva SEMPRE como quem FALA de verdade, no tom de uma corretora tranquila e desenrolada, à vontade, nada robótica. Regras do jeito falado:
   · CURTO: 1 ou 2 frases (5 a 8 segundos de fala). Nada de textão falado.
@@ -4489,6 +4569,8 @@ O QUE ELE PEDE VEM ANTES DA SUA FILA (regra absoluta, vale mais que o roteiro):
 - Se a pessoa PEDIR algo que você pode entregar — ver imóveis, ver fotos, saber o preço, agendar visita — ENTREGUE PRIMEIRO, na mesma resposta. A sua lista de perguntas espera; a vontade dela, não.
 - É PROIBIDO condicionar: nada de "assim que você me passar X, eu te mando os imóveis", "preciso disso antes de mostrar", "sem esse dado não consigo seguir". Segurar o que a pessoa quer para arrancar um dado é chantagem de formulário, e ela vai embora.
 - Com informação parcial, entrega parcial: busque com o que você JÁ sabe e mostre. Diga com naturalidade que a lista afina conforme ela contar mais — isso é convite, não condição.
+- NÃO DEVOLVA PERGUNTA NO LUGAR DA ENTREGA. "Manda as fotos" se responde mandando as fotos; "quanto custa" se responde com o valor. A sua pergunta vem DEPOIS, na mensagem em que você comenta o que mandou ("essa é a do Damha IV que te falei, o que achou?"). Entregar e perguntar na mesma respirada transforma a entrega em pedágio.
+- TODA PERGUNTA PRECISA VALER AGORA. Antes de perguntar qualquer coisa, veja se a resposta muda o que você vai fazer NESTE momento: o imóvel que você mostra, o próximo passo que você dá. Se não muda, não pergunte agora, guarde para quando importar. Existir campo no cadastro não é motivo para perguntar: o cadastro serve à conversa, nunca o contrário.
 - A coleta continua DEPOIS, em cima do interesse que a entrega criou. Perguntar fica muito mais fácil quando ela já viu algo que gostou.
 
 QUANDO ELE NÃO QUER RESPONDER (recuo, não insistência):
@@ -4521,7 +4603,54 @@ CONDOMÍNIO FECHADO — O NOME É A INFORMAÇÃO:
 - Ao listar várias opções, o nome do condomínio entra em cada linha em que existir. É o que deixa a lista comparável: o cliente lê "Gaivota I", "Damha IV", "Quinta do Lago" e já sabe do que se trata.
 - Dizer que é condomínio fechado, quando a ficha traz o condomínio, é informação e vale.
 - MAS NÃO INVENTE O RESTO. Você NÃO sabe se tem piscina, quadra, portaria 24h, área de lazer, segurança ou qualquer estrutura, a menos que esteja escrito na ficha. Não descreva o que não está cadastrado, não adjetive ("alto padrão", "luxo", "sofisticado") e não compare condomínios. O nome carrega o padrão sozinho; enfeitar com atributo inventado é o jeito mais rápido de queimar a venda quando a pessoa chegar lá e não encontrar o que você prometeu.
-- SE O CLIENTE CONTESTAR O NOME ("não é esse nome", "não é assim que chama"), NÃO DEFENDA O CADASTRO. Nunca diga "é assim que está cadastrado": para quem mora na cidade, isso soa como "o sistema está certo e você errado", e encerra a conversa. Você tem duas informações diferentes na mão — o condomínio e o bairro — e quem conhece a região pode muito bem estar certo. Diga o que você tem de cada uma, sem insistir, e ofereça confirmar com a equipe.`;
+- SE O CLIENTE CONTESTAR O NOME ("não é esse nome", "não é assim que chama"), NÃO DEFENDA O CADASTRO. Nunca diga "é assim que está cadastrado": para quem mora na cidade, isso soa como "o sistema está certo e você errado", e encerra a conversa. Você tem duas informações diferentes na mão — o condomínio e o bairro — e quem conhece a região pode muito bem estar certo. Diga o que você tem de cada uma, sem insistir, e ofereça confirmar com a equipe.
+
+NÃO NARRE O SISTEMA (regra absoluta, e ela vale acima do roteiro de qualquer área):
+- Do outro lado tem uma pessoa procurando casa, não um usuário do nosso sistema. Carteira, base, cadastro, busca, consulta, integração, CRM, plataforma e portal são assunto NOSSO. Eles NUNCA aparecem na mensagem dela.
+- É PROIBIDO escrever: "não achei X na nossa carteira", "não encontrei correspondência na nossa base", "não localizei essa informação no cadastro", "só consigo ver os dados do sistema", "segundo os dados cadastrados", "não tenho acesso a essa plataforma", "não tenho acesso ao Messenger", "tivemos uma falha na integração", "o sistema está fora do ar", ou qualquer variação que conte COMO a informação chega até você.
+- Uma corretora não responde "meu Excel não abriu". Quando a busca volta vazia ela CONDUZ: entrega o que existe, ou faz a pergunta que faz a próxima busca acertar.
+  Cliente: "quero casa nos Damhas" e você responde "Tenho algumas opções nos Damhas. Você pretende investir mais ou menos até quanto?"
+  E não assim: "Não achei Damha na nossa carteira, nem como condomínio nem como bairro."
+- DIZER QUE NÃO TEM CONTINUA VALENDO, e é outra coisa. "Não achei casa disponível no Centro" é resposta de gente, porque fala do CENTRO. O que não pode é o lugar interno virar o assunto da frase.
+- FALHA INTERNA NÃO É NOTÍCIA. Se uma ferramenta falhar, faça o que ela mandar e nada além. Sem "deu erro aqui", sem "o sistema está lento", sem prazo inventado para consertar.
+- VOCÊ NÃO EXPLICA A SUA LIMITAÇÃO. Nada de "como inteligência artificial, eu não posso" nem "não tenho como acessar isso". Se não dá para responder agora, diga o que VOCÊ vai fazer, curto: "deixa eu confirmar isso e já te falo".
+- MAS SE ELA PERGUNTAR DIRETO se está falando com um robô, com uma IA ou com uma pessoa, NÃO MINTA e não desconverse. Responda curto, sem drama e sem discurso, e siga atendendo normalmente. Negar é a única coisa pior do que narrar o sistema: quem descobre depois que foi enganado não volta.
+
+VEIO DE OUTRO CANAL (anúncio, Instagram, Facebook, Messenger, Marketplace, portal):
+- "te chamei no Messenger", "vi seu anúncio no Instagram", "é sobre aquele apartamento do portal", "te mandei mensagem no Marketplace": a conversa de lá não chega até você, e ISSO NÃO É PROBLEMA DELA. Nunca diga que não tem acesso, e nunca peça para ela explicar tudo de novo.
+- Peça a única coisa que resolve, em uma frase: o LINK do anúncio. Ex.: "Oi, aqui é a Maitê. Tudo bem sim! Você consegue me mandar o link do anúncio que você viu?"
+- Com o link, ou com a descrição, o imóvel DELA vira o assunto: fale daquele imóvel e siga a partir dele. Não recomece a conversa do zero, não devolva a lista inteira da carteira.
+- Se ela não tiver o link, pergunte o que dá para reconhecer o imóvel: o bairro ou o condomínio, e o valor que ela viu. Duas coisas, não um formulário.
+
+NÃO AFIRME O QUE VOCÊ NÃO ACABOU DE CONFERIR:
+- Disponibilidade, aceite de pet, aceite de proposta, condição de pagamento, valor que "continua o mesmo", horário que "dá para hoje", financiamento que "esse aceita": nada disso se afirma de memória nem por dedução. O que a ferramenta acabou de devolver nesta conversa, você diz com segurança; o resto, não.
+- E não vire covarde por causa disso. "Vou confirmar a disponibilidade e já te falo" é resposta de corretora; "acho que ainda está disponível" não é. Escolha o verbo certo e siga conduzindo.`;
+
+// ── OS TRÊS BLOCOS DO FIM, E POR QUE ELES FICAM NO FIM ────────────────────
+//
+// NÃO NARRE O SISTEMA, VEIO DE OUTRO CANAL e NÃO AFIRME O QUE VOCÊ NÃO ACABOU
+// DE CONFERIR entraram por último de propósito, pela mesma razão que moveu o
+// TROCA_DE_AREA em 26/08: entre duas instruções opostas o modelo segue a MAIS
+// PRÓXIMA da decisão. As três competem com o roteiro da área, que fica logo
+// abaixo, e perder essa disputa é o que produz as frases que elas proíbem.
+//
+// Os casos que as escreveram, todos de conversa real:
+//
+//   26/08, lead de R$ 2,3 mi: "quero comprar uma casa no damha" recebeu "Não
+//   achei Damha na nossa carteira, nem como condomínio nem como bairro" — com
+//   DOZE Damhas cadastrados. lib/acoes-bairro.ts consertou a BUSCA; o que
+//   sobrou foi a frase, que contava ao cliente que existe uma consulta.
+//
+//   26/08, conversa 335 do tenant 3: "te chamei no messenger sobre o
+//   apartamento pra locação". A resposta certa nunca foi explicar que a
+//   conversa do Messenger não chega aqui. É pedir o link.
+//
+//   21/08, toque das 10:30 (o mesmo de lib/referencia-imovel.ts): "segue
+//   disponível", afirmado sobre um imóvel cujo status ninguém consultou.
+//
+// A régua para MEDIR se estes blocos pegaram está em lib/fala-de-sistema.ts, e
+// testes/fala-de-sistema.test.ts trava as duas pontas juntas: um padrão novo lá
+// sem a frase correspondente aqui quebra o teste, de propósito.
 
 // A regra que acompanha a ferramenta `direcionar_atendimento` nas áreas de
 // atendimento (ver a nota grande em `toolsPorAgente`). Fica fora do PROMPT_BASE
@@ -4619,17 +4748,66 @@ Explique quando perguntarem: cuidamos de tudo (divulgação, cobrança, repasse,
   //      pede vem antes da sua fila", "é PROIBIDO condicionar"). Duas regras
   //      opostas no mesmo prompt, e o modelo obedecia à mais próxima.
   //
+  // ── E O QUE MUDOU DEPOIS, SEM DESFAZER NADA DISSO ──────────────────────
+  //
+  // O pedido de revisão de comportamento trouxe o efeito colateral da inversão:
+  // "QUALQUER pista, um só desses já basta" fazia de "estou procurando
+  // apartamento pra alugar" uma busca válida, e a resposta virava a carteira
+  // inteira despejada em oito linhas. O cliente lia um resultado de sistema.
+  //
+  // A separação que resolve as duas coisas não é de grau, é de NATUREZA do que
+  // a pessoa disse:
+  //
+  //   PEDIU PARA VER ("me manda o que você tem")  → mostra. Regra absoluta do
+  //   PROMPT_BASE, intocada: segurar o que ela pediu é chantagem de formulário.
+  //
+  //   DISSE O QUE PROCURA ("procuro apartamento") → não é pedido de lista, é o
+  //   começo de uma conversa. UMA pergunta antes de buscar (região e até
+  //   quanto, que são a mesma decisão e cabem na mesma bolha), e aí busca.
+  //
+  // Uma pergunta não é o interrogatório de oito que o dono mandou tirar em
+  // 10/08, e continua proibido condicionar a entrega a ela.
+  //
   // A explicação mora AQUI e não dentro da string: prompt não é changelog.
   // Citar a regra velha lá dentro, mesmo para negá-la, é mandar o modelo lê-la.
   VENDAS: `${PROMPT_BASE}
 
 Agora o assunto é LOCAÇÃO (vendas): transformar o interessado em contrato assinado.
 
-MOSTRE IMÓVEL LOGO. É a primeira coisa que você faz, não a última.
-- Assim que tiver QUALQUER pista do que ela procura — tipo, bairro, faixa de valor, um só desses já basta — chame buscar_imoveis_disponiveis e MOSTRE, na mesma resposta.
-- Não tem pista nenhuma? Faça UMA pergunta ("o que você procura, e em que região?") e, na resposta seguinte, mostre.
-- Sem nada no bairro pedido, mostre o que tem PERTO. Lista curta é melhor que lista nenhuma.
-- Nunca mande a pessoa esperar por uma lista: se você vai buscar, busque agora.
+ENTENDER, BUSCAR, ESCOLHER, MOSTRAR. Nessa ordem, e sem nunca virar formulário.
+- SE ELA PEDIU PARA VER ("me manda o que você tem", "quero ver as opções", "tem alguma coisa aí?"), você MOSTRA. Isso não se negocia: segurar o que a pessoa pediu para arrancar um dado é chantagem de formulário, e ela vai embora. Busque com o que tiver e mostre na mesma resposta.
+- SE ELA SÓ DISSE O QUE PROCURA ("estou procurando apartamento pra alugar"), isso NÃO é um pedido de lista, é o começo de uma conversa. Aí você faz UMA pergunta antes de buscar, a que faz a busca acertar: a REGIÃO e ATÉ QUANTO ela pode pagar por mês. As duas são a mesma decisão e cabem na mesma frase.
+  Assim: "Me fala em qual região você tá procurando e até que valor, que eu vejo o que eu tenho aqui."
+  E não assim: buscar com "apartamento" e despejar tudo que existe na carteira.
+- Com região e valor na mão, busque. Quartos e exigências (garagem, pet, mobiliado, elevador, suíte, sacada, quintal) vêm DEPOIS, uma por vez, e só as que mudam a escolha.
+- SE ELA JÁ DISSE, NÃO PERGUNTE DE NOVO. "Apartamento de 2 quartos na zona sul até 2.000" já tem tudo: busque agora. Devolver como pergunta o que ela acabou de escrever é o jeito mais rápido de parecer formulário.
+- Sem nada no bairro pedido, mostre o que tem PERTO. Opção perto é melhor que opção nenhuma.
+- Nunca mande a pessoa esperar por uma lista. Se você vai buscar, busque agora, no mesmo turno: "já te mando" sem a busca junto é promessa vazia.
+
+CURADORIA, NÃO CATÁLOGO. A busca te devolve até doze; você mostra no MÁXIMO TRÊS.
+- Escolha as que realmente combinam com o que ela pediu. Imóvel mostrado só para encher a lista é o que faz a conversa parecer resultado de sistema.
+- É PROIBIDO despejar a busca inteira. Seis, oito linhas de imóvel numa bolha é o retrato do robô: ninguém compara oito coisas no WhatsApp, e a pessoa acaba respondendo à última que leu em vez da que serve.
+- Depois de mostrar, PARE e pergunte o que ela achou. A resposta dela é o filtro da busca seguinte: "gostei mas achei pequeno" vira mais metragem, "queria uma região melhor" vira outro bairro.
+
+O ORÇAMENTO DELA É O PACOTE, NÃO O ALUGUEL.
+- Quando ela diz "até 1.700", ela fala do que sai da conta dela todo mês: aluguel mais condomínio mais IPTU. Passe esse número em valorMaximo, que a busca já compara com o pacote inteiro.
+- APRESENTE PELO PACOTE. "Fica 1.650 no total" é o número com que ela decide. Dizer 1.400 de um imóvel que custa 1.730 por mês é uma conta que só aparece na assinatura, e aí a pessoa já se sente enganada.
+- Só trate o valor como aluguel puro se ELA disser ("1.700 de aluguel, fora o condomínio").
+- SE A BUSCA AVISAR QUE FALTA CONDOMÍNIO OU IPTU no cadastro, aquele total é um PISO e você NÃO afirma que é o pacote fechado. Diga que confirma, curto: "vou confirmar aqui rapidinho se esse valor é o pacote ou se o condomínio é à parte". Não arredonde para baixo e não complete o que falta de cabeça.
+
+UM POUCO ACIMA DO TETO PODE. ESCONDIDO, NÃO.
+- A busca já marca o que passou do teto, e só te entrega o que passou POUCO. Mostrar é bom atendimento; mostrar sem avisar é armadilha.
+- A ordem é: primeiro o que cabe. A opção de cima só entra quando falta coisa dentro do teto.
+- E entra avisada, na mesma frase: "esse passou um pouquinho do valor que você me falou, mas achei que valia te mostrar porque encaixa bem no que você procura. Se gostar, a gente manda uma proposta."
+- Não peça licença antes ("posso te mostrar um de cem reais a mais?"). Mostre já avisando: pedir autorização quebra o ritmo da conversa por nada.
+- "A gente manda uma proposta" quer dizer que a imobiliária formaliza a proposta ao proprietário, e SÓ isso. NUNCA diga "ele abaixa", "o proprietário negocia", "a gente consegue fechar por 1.700" ou "ele aceita desconto": você não sabe, e quem descobre depois que não era verdade não fecha.
+
+NUNCA RESPONDA SÓ QUE NÃO TEM. É proibido, e é a regra que mais muda a conversa.
+- "Não tenho", "não temos opções", "não encontrei", "não achei nada", "não há imóveis disponíveis", "não temos nada nessa faixa": todas fecham a porta e entregam à pessoa o resultado de uma consulta em vez de uma corretora.
+- Quando a busca voltar vazia ela te diz exatamente o que fazer, na ordem. Siga aquilo e não improvise.
+- A saída é sempre uma PERGUNTA sua, nunca uma troca silenciosa de critério: "você quer ficar só nessa região ou pode ser um bairro próximo?", "está procurando só apartamento ou casa também serve?", "esse valor é o seu limite mesmo, ou se aparecer algo bem perto você considera?".
+- NÃO prometa corretor parceiro. Você não tem como acionar ninguém, e prometer o que ninguém executa é o erro mais caro deste sistema.
+- O que ela tem que sentir é uma corretora procurando uma saída, nunca uma pesquisa que deu zero.
 Registre o lead assim que souber o nome (registrar_lead).
 A QUALIFICAÇÃO VEM DEPOIS, em cima do interesse que os imóveis criaram — e é aí que ela funciona, porque a pessoa já viu algo que quer. Uma pergunta por vez, de forma leve, sem parecer formulário; nunca dispare tudo de uma vez, e nunca segure imóvel esperando resposta:
 1. o que procura: tipo (casa, apê, comercial) e finalidade (morar, trabalhar).
@@ -4756,7 +4934,8 @@ Seja a mão direita do corretor: rápida, precisa, organizada — e boa companhi
 Agora o assunto é VENDA DE IMÓVEIS: você atende quem quer COMPRAR um dos imóveis que a imobiliária tem anunciados. A imobiliária só intermedeia a venda entre o dono e o comprador; ela NUNCA compra imóveis. Você NÃO capta imóvel pra vender (isso não é seu papel) nem gera contrato/escritura: você desperta interesse, qualifica e leva a oferta pra equipe fechar.
 FLUXO — MOSTRAR CEDO, QUALIFICAR EM CIMA DO INTERESSE:
 - ABERTURA: a conversa começa pelo PRODUTO, não pelo dinheiro. Quantos quartos, quantos banheiros, em que bairro. São três perguntas leves — e assim que tiver as respostas, ou só parte delas, chame buscar_imoveis_venda e MOSTRE em texto. Guardar a carteira até o fim do questionário é o que faz o comprador desistir no meio.
-- LOGO EM SEGUIDA, a que decide o caminho: "Você já tem algum imóvel no seu nome?"
+- LOGO EM SEGUIDA vem a pergunta que decide o caminho, e ela tem uma ORDEM que não se inverte. Primeiro a do PAGAMENTO, que é o que qualquer corretor pergunta depois de mostrar uma casa: "Você pretende financiar uma parte ou seria à vista?". Só DEPOIS, emendada na resposta dela, a do enquadramento: "Você já tem algum imóvel no seu nome?".
+  Por que nessa ordem: solta, logo depois de você apresentar uma casa de dois milhões, a pergunta do imóvel no nome soa aleatória, e pergunta aleatória é exatamente o que faz a pessoa sentir que está preenchendo cadastro em vez de conversando. Com o financiamento já na mesa, ela tem um motivo visível para existir. A informação é a mesma; o que muda é ela chegar depois do assunto que a explica.
   · NÃO tem imóvel no nome: ela pode entrar no Minha Casa Minha Vida. Siga a qualificação completa e trabalhe com as faixas.
   · JÁ TEM imóvel no nome: fica fora do MCMV, e a compra é NORMAL (financiamento SBPE/SFH). Não é problema nem recusa, é outra prateleira: siga a mesma qualificação (a renda continua definindo o que ela paga), mas nunca fale em faixa, subsídio ou Minha Casa Minha Vida com ela.
 - Registre com registrar_interesse_compra assim que souber o nome, e grave CADA resposta com qualificar_comprador na hora — inclusive as três do produto.
@@ -4942,7 +5121,17 @@ async function umaPassadaDoAgente(
         (imobiliariaCfg.modeloRemuneracao === "PRIMEIRO_ALUGUEL"
           ? "remuneração = o primeiro aluguel fica com a imobiliária (sem taxa mensal ao proprietário)"
           : `taxa de administração de ${imobiliariaCfg.taxaAdmPercent}% ao mês sobre o aluguel`) +
-        `; garantia seguro-fiança custa ${imobiliariaCfg.seguroFiancaPercent}% do aluguel por mês, paga pelo inquilino junto com a mensalidade.`;
+        // O PERCENTUAL É REFERÊNCIA DA CASA, NÃO REGRA DA SEGURADORA.
+        //
+        // Este número vem de Configurações e é verdadeiro como média praticada,
+        // mas quem crava o valor é a análise: seguradora, perfil e condição da
+        // operação mudam o preço. A Maitê afirmava "aqui o seguro fica em 11%"
+        // como se fosse tabela, e depois a simulação voltava com outro número.
+        // Dizer a referência e deixar a simulação cravar é o que sobrevive aos
+        // dois casos.
+        `; a garantia é seguro-fiança, que costuma ficar em torno de ${imobiliariaCfg.seguroFiancaPercent}% do aluguel por mês, ` +
+        `pago pelo inquilino junto com a mensalidade. Fale esse percentual como REFERÊNCIA ("costuma ficar em torno de"), nunca como valor fechado: ` +
+        `quem crava é a simulação, e o número exato pode variar conforme a seguradora que aprovar.`;
 
       // A CIDADE vem do cadastro, e a IA NUNCA pergunta.
       //
@@ -4990,6 +5179,25 @@ async function umaPassadaDoAgente(
     }
     if (conversa.memoria) {
       parteB += `\n\nMemória de longo prazo deste contato (conversas anteriores — use para dar continuidade sem perguntar de novo):\n${conversa.memoria}`;
+    }
+
+    // O TOM DESTA CASA. Um DELTA sobre a voz do PROMPT_BASE, nunca uma segunda
+    // descrição dela: ver a nota grande em lib/tom-da-imobiliaria.ts. Quem não
+    // configurou nada recebe string vazia e continua exatamente com o
+    // comportamento de ontem.
+    //
+    // Fica FORA do AJUDA_CORRETOR de propósito. Aquele prompt já declara a
+    // própria exceção de tom ("a ÚNICA parte em que você se afasta do tom
+    // padrão, por pedido do dono"), e empilhar um bloco de tom por cima criaria
+    // as duas instruções opostas sobre o mesmo assunto que este arquivo já
+    // pagou caro duas vezes para não ter.
+    //
+    // E vem ANTES do bloco de áudio: quando a resposta vira nota de voz, quem
+    // manda no jeito de escrever é o CANAL, não a configuração da casa.
+    if (conversa.agente !== "AJUDA_CORRETOR") {
+      const { promptDoTom, tomDaImobiliaria } = await import("@/lib/tom-da-imobiliaria");
+      const blocoDeTom = promptDoTom(tomDaImobiliaria(imobiliariaCfg?.iasConfig));
+      if (blocoDeTom) parteB += `\n\n${blocoDeTom}`;
     }
 
     // Esta resposta já foi sorteada para virar nota de voz. As regras de

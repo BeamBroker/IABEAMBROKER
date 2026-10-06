@@ -9,8 +9,8 @@ e alterado sem abrir o sistema inteiro. É a área da chefe.
 ## O que tem aqui
 
 ```
-lib/        35 arquivos · o que a IA fala, quando fala e o que ela faz
-testes/     34 arquivos · as regras travadas em teste, com o caso real que as criou
+lib/        38 arquivos · o que a IA fala, quando fala e o que ela faz
+testes/     38 arquivos · as regras travadas em teste, com o caso real que as criou
 docs/       como tudo funciona, em português
 CLAUDE.md   as instruções do agente — leia se for usar Claude aqui
 scripts/    sincronização com o sistema
@@ -29,6 +29,9 @@ scripts/    sincronização com o sistema
 | `lib/pos-visita.ts` · `lib/pos-documentos.ts` | o que ela fala depois da visita e no meio da papelada |
 | `lib/seguro-fianca.ts` · `lib/prompt-seguro-fianca.ts` | a peneira do seguro na locação |
 | `lib/mensagem-segura.ts` | a última barreira antes de qualquer texto sair |
+| `lib/fala-de-sistema.ts` | a régua das frases que denunciam que do outro lado tem um programa |
+| `lib/pacote-locacao.ts` | o que a pessoa paga por mês de verdade: aluguel + condomínio + IPTU, e a margem acima do teto |
+| `lib/tom-da-imobiliaria.ts` | o tom da atendente, por imobiliária: mais solto, natural, profissional ou alto padrão |
 | `lib/prompt-audio.ts` | como ela escreve quando a resposta vira nota de voz |
 | `lib/ia-config.ts` | o nome da atendente, configurável por imobiliária |
 | `lib/analise-lead.ts` · `lib/crm-conversas.ts` | a IA lendo a conversa para alimentar o quadro |
@@ -65,6 +68,8 @@ para produção é o Pablo, com a suíte inteira e dez portões de deploy.
 6. `docs/06-como-mexer-e-devolver.md` — o ciclo de trabalho, do `pull` ao deploy
 7. `docs/07-a-fronteira-e-o-ciclo-do-lead.md` — a decisão da reunião de 26/08:
    depois da passagem, a IA não fala mais com o cliente — só lembra o corretor
+8. `docs/08-a-conversa-humana.md` — a revisão de comportamento de 26/08, e o que
+   nela é prompt, o que já existia e o que depende do sistema
 
 ## Como uma mudança chega ao cliente
 
