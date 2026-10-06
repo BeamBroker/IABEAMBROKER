@@ -4,21 +4,23 @@ Cópia de `administrativo/lib/`, o CRM da Beam Broker. Os testes moram em
 `lib/` lá também; aqui ficam em `testes/` só para separar a leitura.
 
 Atualizado em 26/08/2026, a partir de `feature/integracao-26-08` mais a troca
-para Sonnet 5 (commit `7a5df1d` do sistema).
+para Sonnet 5 (commit `7a5df1d` do sistema). Contagens revisadas em 06/10/2026
+para incluir os arquivos nascidos aqui, na branch `comportamento-humano`
+(ver `docs/08`) — esses ainda não existem no sistema até o Pablo aplicar.
 
 > **Atenção ao que ainda não está em produção.** Na hora deste espelho,
 > produção rodava `075decf`. O ciclo do lead (brinco, passagem, fronteira,
 > cadência do vendedor) e a troca para Sonnet estavam prontos e testados, mas
 > ainda não deployados. Ver `docs/07`.
 
-## Comportamento (`lib/`) — 35 arquivos, 14997 linhas
+## Comportamento (`lib/`) — 38 arquivos, 15704 linhas
 
 | arquivo | linhas | o que é |
 |---|---|---|
 | `abordagem-portal.ts` | 278 | A primeira mensagem para quem preencheu o formulário do portal. |
 | `acoes-bairro.ts` | 292 | Achar o bairro que a pessoa quis dizer. |
 | `acoes-visita.ts` | 284 | O núcleo do agendamento de visita, compartilhável entre a IA e a tela. |
-| `agentes.ts` | 5369 | Os agentes de IA do sistema (persona única: Maitê) — todos com PODER D |
+| `agentes.ts` | 5577 | Os agentes de IA do sistema (persona única: Maitê) — todos com PODER D |
 | `analise-lead.ts` | 294 | A leitura profunda da conversa de um lead — o que o cartão do Meu dia  |
 | `atendimento.ts` | 246 | (sem cabeçalho) |
 | `atividades-cadencia.ts` | 155 | A cadência que faz a atividade nascer sozinha. |
@@ -32,26 +34,29 @@ para Sonnet 5 (commit `7a5df1d` do sistema).
 | `distribuicao.ts` | 365 | O rodízio de leads entre corretores. |
 | `empreendimentos.ts` | 305 | Empreendimento: regras de ENTREGA e de ENQUADRAMENTO MCMV. |
 | `entrega-ia.ts` | 155 | A hora em que a IA solta o card e um humano assume. |
-| `followup.ts` | 816 | Motor de follow-up comercial (#7): cadência de reengajamento para nunc |
+| `fala-de-sistema.ts` | 131 | A FALA DE SISTEMA: o jeito de falar que denuncia que do outro lado tem um programa. (nascido aqui, 26/08) |
+| `followup.ts` | 856 | Motor de follow-up comercial (#7): cadência de reengajamento para nunc |
 | `fronteira-ia.ts` | 205 | A FRONTEIRA: onde a IA para de falar com o cliente. |
 | `ia-config.ts` | 104 | Nome de cada IA (por agente), configurável por imobiliária. |
-| `mensagem-segura.ts` | 115 | Última barreira antes do texto sair para o cliente final. |
+| `mensagem-segura.ts` | 140 | Última barreira antes do texto sair para o cliente final. |
 | `mercado.ts` | 115 | Referência de preço para as IAs. Combina duas fontes, sempre honestas: |
 | `origem-lead.ts` | 183 | De onde o lead veio — uma resposta só, para todos os leads. |
+| `pacote-locacao.ts` | 133 | O PACOTE: o que a pessoa paga por mês para morar ali — aluguel + condomínio + IPTU. (nascido aqui, 26/08) |
 | `passagem.ts` | 251 | A PASSAGEM do lead ao vendedor — o ponto único onde o relógio começa. |
 | `pos-documentos.ts` | 113 | O que a Maitê fala entre "recebi seus documentos" e "chave na mão". |
 | `pos-visita.ts` | 175 | (sem cabeçalho) |
 | `prompt-audio.ts` | 106 | Escrever para o OUVIDO é diferente de escrever para o olho, e o TTS nã |
-| `prompt-seguro-fianca.ts` | 136 | O roteiro do seguro-fiança para a IA de locação. |
-| `qualificacao.ts` | 814 | Qualificação de financiamento do comprador de EMPREENDIMENTO. |
+| `prompt-seguro-fianca.ts` | 149 | O roteiro do seguro-fiança para a IA de locação. |
+| `qualificacao.ts` | 827 | Qualificação de financiamento do comprador de EMPREENDIMENTO. |
 | `referencia-imovel.ts` | 169 | Como o CLIENTE reconhece o imóvel do qual estamos falando. |
-| `regua-cobranca.ts` | 317 | Régua de cobrança em ESCADA — o follow-up de quem deve. |
+| `regua-cobranca.ts` | 344 | Régua de cobrança em ESCADA — o follow-up de quem deve. |
 | `relacionamento.ts` | 256 | Relacionamento — a Maitê falando ANTES de o assunto virar problema. |
 | `seguro-fianca.ts` | 180 | Simulação do seguro-fiança — a peneira que vem logo depois da triagem, |
 | `sla-fechamento.ts` | 232 | O fechamento do relógio: o vendedor respondeu, e em quanto tempo. |
 | `sla-vendedor.ts` | 283 | O SLA do vendedor: quanto tempo entre a PASSAGEM do lead e a primeira |
+| `tom-da-imobiliaria.ts` | 117 | O TOM da atendente, escolhido por imobiliária. (nascido aqui, 26/08) |
 
-## Testes (`testes/`) — 34 arquivos, 9707 linhas
+## Testes (`testes/`) — 38 arquivos, 10378 linhas
 
 | arquivo | linhas | o que trava |
 |---|---|---|
@@ -71,21 +76,25 @@ para Sonnet 5 (commit `7a5df1d` do sistema).
 | `distribuicao.test.ts` | 138 | A regra que divide comissão entre pessoas. |
 | `empreendimentos.test.ts` | 339 | Empreendimento: as três datas de entrega são coisas diferentes, e a fa |
 | `entrega-ia.test.ts` | 219 | A entrega do card pela IA, contra o BANCO. |
-| `followup-texto.test.ts` | 75 | A mensagem que o cliente lê. Cada caso aqui é uma frase que chegou (ou |
+| `fala-de-sistema.test.ts` | 129 | A fala de sistema: o vazamento que não tem nome de variável nenhum. |
+| `followup-texto.test.ts` | 225 | A mensagem que o cliente lê. Cada caso aqui é uma frase que chegou (ou |
 | `fronteira-ia.test.ts` | 153 | A fronteira: a IA para de falar com o cliente depois do handoff. |
 | `mensagem-segura.test.ts` | 130 | Um cliente que queria comprar uma casa recebeu, no WhatsApp: |
 | `nome-da-ia.test.ts` | 148 | (sem cabeçalho) |
 | `origem-lead.test.ts` | 190 | A régua de "de onde o lead veio" — testes puros, sem banco. |
+| `pacote-locacao.test.ts` | 131 | O pacote da locação: o que a pessoa paga por mês para morar ali. |
 | `passagem.test.ts` | 267 | O carimbo da passagem: as regras que decidem se o relógio existe. |
 | `pedido-de-visita.test.ts` | 203 | O PEDIDO DE VISITA É A ENTREGA — exercitado contra o banco. |
 | `prompt-audio.test.ts` | 118 | A decisão de mandar áudio passou a vir ANTES de a IA escrever. Sortead |
 | `prompt-seguro-fianca.test.ts` | 166 | O roteiro do seguro-fiança depois da inversão da ordem. |
-| `qualificacao.test.ts` | 583 | A escada de qualificação de empreendimento: as perguntas na ordem, e s |
+| `qualificacao.test.ts` | 620 | A escada de qualificação de empreendimento: as perguntas na ordem, e s |
 | `referencia-imovel.test.ts` | 119 | Cada caso aqui é um tipo que existe de verdade no catálogo de produção |
 | `regua-cobranca-banco.test.ts` | 183 | A régua rodando contra o BANCO, não só a lógica pura. |
+| `regua-cobranca-texto.test.ts` | 95 | O texto de cada degrau da régua, sem banco. |
 | `relacionamento-banco.test.ts` | 154 | Relacionamento rodando contra o BANCO. |
 | `saida-de-area.test.ts` | 238 | A SAÍDA DE ÁREA, EXERCITADA — o turno inteiro, do assunto novo até a r |
 | `score-lead.test.ts` | 321 | O score, cobrado nas três regras que o tornam honesto. |
 | `seguro-fianca.test.ts` | 162 | (sem cabeçalho) |
 | `sla-fechamento.test.ts` | 231 | O fechamento do relógio: a regra que decide se o vendedor "respondeu". |
 | `sla-vendedor.test.ts` | 300 | O SLA do vendedor: os casos que decidem um número que vai ser usado pa |
+| `tom-da-imobiliaria.test.ts` | 129 | O tom da atendente, por imobiliária. |
